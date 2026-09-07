@@ -1,0 +1,8 @@
+{
+  "name": "MESIN-HDHL-FIX",
+  "description": "Imported from GitHub: haikalmalilangnew-dotcom/MESINHDHL",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
