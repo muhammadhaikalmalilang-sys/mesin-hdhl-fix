@@ -1,7 +1,13 @@
-import { Machine, Nurse, ShiftAssignment, ShiftType, FairnessReport, NurseMonthlyStat, parseSpecialDuties } from '../types';
+import { Machine, Nurse, ShiftAssignment, ShiftType, FairnessReport, NurseMonthlyStat, parseSpecialDuties, getMachineStatusForShift } from '../types';
 import { WhatsAppDispatcher } from './WhatsAppDispatcher';
 
 export class FairSchedulerEngine {
+  /**
+   * Helper to get effective status for a machine on a given shift
+   */
+  static getMachineStatusForShift(machine: Machine, shift: 'PAGI' | 'SIANG'): Machine['status'] {
+    return getMachineStatusForShift(machine, shift);
+  }
   /**
    * Checks whether a nurse or duty string contains the CITO special duty.
    */
@@ -31,7 +37,10 @@ export class FairSchedulerEngine {
   }
 
   /**
-   * Generates a balanced, fair 1-month schedule for nurses and machines.
+   * Generates a balanced, fair 1-month schedule for nurses and machines:
+   * 1. Seluruh staff dalam satu minggu kerja penuh dari hari Senin hingga Sabtu (6 hari kerja).
+   * 2. Libur HANYA pada hari Minggu (seluruh staff LIBUR).
+   * 3. Kepala Ruang (KARU): Setiap hari kerja (Senin - Sabtu) selalu sif PAGI.
    */
   static generateMonthlySchedule(
     year: number,
@@ -54,162 +63,257 @@ export class FairSchedulerEngine {
     let seedCounter = seed;
     const assignments: ShiftAssignment[] = [];
 
+    // Identify Karu vs Non-Karu
+    const isKaru = (n: Nurse) => (n.role || '').toUpperCase() === 'KARU';
+    const karuNurses = activeNurses.filter(isKaru);
+    const nonKaruNurses = activeNurses.filter((n) => !isKaru(n));
+
     // Workload tracking maps
     const workingDaysCount: Record<number, number> = {};
     const pagiCount: Record<number, number> = {};
     const siangCount: Record<number, number> = {};
+    const liburCount: Record<number, number> = {};
+    const consecutiveSameShift: Record<number, { shift: string; count: number }> = {};
     const consecutiveWorkDays: Record<number, number> = {};
     const lastShiftOfNurse: Record<number, ShiftType | null> = {};
     const fourMachineTurnTracker: Record<number, number> = {};
     const isolationTurnTracker: Record<number, number> = {};
+    const lastDayIsolation: Record<number, boolean> = {};
 
     activeNurses.forEach((n) => {
       workingDaysCount[n.id] = 0;
       pagiCount[n.id] = 0;
       siangCount[n.id] = 0;
+      liburCount[n.id] = 0;
+      consecutiveSameShift[n.id] = { shift: 'NONE', count: 0 };
       consecutiveWorkDays[n.id] = 0;
       lastShiftOfNurse[n.id] = 'LIBUR';
       fourMachineTurnTracker[n.id] = 0;
       isolationTurnTracker[n.id] = 0;
+      lastDayIsolation[n.id] = false;
     });
 
-    const totalActive = activeNurses.length;
-    // Ideal daily staffing (e.g. for 17 nurses: 8 Pagi, 8 Siang, 1 Off)
-    const targetDailyPagi = Math.max(1, Math.min(8, Math.floor(totalActive / 2)));
-    const targetDailySiang = Math.max(1, Math.min(8, Math.floor(totalActive / 2)));
+    // Pre-calculate total workdays in this month (Monday through Saturday)
+    let totalWorkdaysInMonth = 0;
+    for (let d = 1; d <= daysInMonth; d++) {
+      if (new Date(year, month - 1, d).getDay() !== 0) {
+        totalWorkdaysInMonth++;
+      }
+    }
 
+    // Iterate through every day of the month
     for (let day = 1; day <= daysInMonth; day++) {
+      const date = new Date(year, month - 1, day);
+      const dayOfWeek = date.getDay(); // 0 is Sunday, 1..6 is Mon..Sat
       const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
-      // Sort candidates by least shifts worked to balance total monthly load
-      const candidates = [...activeNurses].sort((a, b) => {
-        const countDiff = (workingDaysCount[a.id] || 0) - (workingDaysCount[b.id] || 0);
-        if (countDiff !== 0) return countDiff;
-        const consDiff = (consecutiveWorkDays[a.id] || 0) - (consecutiveWorkDays[b.id] || 0);
-        if (consDiff !== 0) return consDiff;
-        return pseudoRandom(seedCounter++) - 0.5;
-      });
-
-      // Filter out nurses who reached max consecutive work days (5 days)
-      const availableNurses = candidates.filter((n) => (consecutiveWorkDays[n.id] || 0) < 5);
-
       const dailyAssigned: ShiftAssignment[] = [];
-      const workingToday: Nurse[] = [];
 
-      // 1. Select Pagi Nurses (Exclude nurses who worked SIANG yesterday to ensure >= 15h rest)
-      const pagiCandidates = availableNurses
-        .filter((n) => lastShiftOfNurse[n.id] !== 'SIANG')
-        .sort((a, b) => {
-          const pDiff = (pagiCount[a.id] || 0) - (pagiCount[b.id] || 0);
-          if (pDiff !== 0) return pDiff;
-          return (workingDaysCount[a.id] || 0) - (workingDaysCount[b.id] || 0);
+      // ==========================================
+      // 1. HARI MINGGU: Seluruh Staff Libur
+      // ==========================================
+      if (dayOfWeek === 0) {
+        activeNurses.forEach((nurse) => {
+          const assignment: ShiftAssignment = {
+            id: `${dateStr}-L-${nurse.id}`,
+            date: dateStr,
+            shiftType: 'LIBUR',
+            nurseId: nurse.id,
+            nurseName: nurse.name,
+            nursePhone: nurse.phone,
+            assignedMachineIds: [],
+            isLeader: false,
+            isWhatsAppSent: false,
+            notes: 'Hari Minggu (Libur Seluruh Staff)',
+            specialDuty: null,
+          };
+          dailyAssigned.push(assignment);
+
+          consecutiveWorkDays[nurse.id] = 0;
+          consecutiveSameShift[nurse.id] = { shift: 'LIBUR', count: 1 };
+          lastShiftOfNurse[nurse.id] = 'LIBUR';
+          lastDayIsolation[nurse.id] = false;
+          liburCount[nurse.id] = (liburCount[nurse.id] || 0) + 1;
         });
 
-      const selectedPagi: Nurse[] = [];
+        // Inactive nurses get CUTI
+        const inactiveNurses = nurses.filter((n) => !n.isActive);
+        inactiveNurses.forEach((nurse) => {
+          const assignment: ShiftAssignment = {
+            id: `${dateStr}-INA-${nurse.id}`,
+            date: dateStr,
+            shiftType: 'CUTI',
+            nurseId: nurse.id,
+            nurseName: nurse.name,
+            nursePhone: nurse.phone,
+            assignedMachineIds: [],
+            isLeader: false,
+            isWhatsAppSent: false,
+            notes: 'Non-aktif / Cuti',
+            specialDuty: null,
+          };
+          dailyAssigned.push(assignment);
+        });
 
-      // Ensure Katim/Karu leadership in Pagi
-      const karuOrKatim = pagiCandidates.find((n) => n.role === 'KARU' || n.role === 'KATIM');
-      if (karuOrKatim) {
-        selectedPagi.push(karuOrKatim);
-        const idxInPagi = pagiCandidates.findIndex((n) => n.id === karuOrKatim.id);
-        if (idxInPagi !== -1) pagiCandidates.splice(idxInPagi, 1);
-        const idxInAvail = availableNurses.findIndex((n) => n.id === karuOrKatim.id);
-        if (idxInAvail !== -1) availableNurses.splice(idxInAvail, 1);
+        assignments.push(...dailyAssigned);
+        continue;
       }
 
-      // Ensure at least one CITO nurse for Pagi if isolation machines are active
-      const hasIsoMachines = activeMachines.some((m) => m.category === 'ISOLASI');
-      if (hasIsoMachines) {
-        const citoNurse = pagiCandidates.find((n) => FairSchedulerEngine.hasCitoDuty(n));
-        if (citoNurse && !selectedPagi.some((p) => p.id === citoNurse.id)) {
-          selectedPagi.push(citoNurse);
-          const idxInPagi = pagiCandidates.findIndex((n) => n.id === citoNurse.id);
-          if (idxInPagi !== -1) pagiCandidates.splice(idxInPagi, 1);
-          const idxInAvail = availableNurses.findIndex((n) => n.id === citoNurse.id);
-          if (idxInAvail !== -1) availableNurses.splice(idxInAvail, 1);
-        }
-      }
+      // ==========================================
+      // 2. HARI KERJA (SENIN - SABTU: 6 HARI KERJA)
+      // Seluruh staf aktif masuk dinas, libur HANYA pada hari Minggu
+      // Pembagian sif berimbang 50:50 (Pagi vs Siang) untuk setiap perawat
+      // ==========================================
+      const workingNonKaruToday = [...nonKaruNurses];
 
-      while (selectedPagi.length < targetDailyPagi && pagiCandidates.length > 0) {
-        const nextNurse = pagiCandidates.shift()!;
-        selectedPagi.push(nextNurse);
-        const idx = availableNurses.findIndex((n) => n.id === nextNurse.id);
-        if (idx !== -1) availableNurses.splice(idx, 1);
-      }
-
-      workingToday.push(...selectedPagi);
-
-      // 2. Select Siang Nurses
-      const siangCandidates = availableNurses.sort((a, b) => {
-        const sDiff = (siangCount[a.id] || 0) - (siangCount[b.id] || 0);
-        if (sDiff !== 0) return sDiff;
-        return (workingDaysCount[a.id] || 0) - (workingDaysCount[b.id] || 0);
-      });
-
+      // Rule: "Untuk staff yang berstatus Kepala Ruang Setiap Hari sif pagi"
+      // Karu nurses ALWAYS work PAGI on Monday through Saturday!
+      const selectedPagi: Nurse[] = [...karuNurses];
       const selectedSiang: Nurse[] = [];
 
-      // Ensure Katim or Senior in Siang
-      const siangLeader = siangCandidates.find((n) => n.role === 'KATIM' || n.skillLevel === 'Senior');
-      if (siangLeader) {
-        selectedSiang.push(siangLeader);
-        const idxInSiang = siangCandidates.findIndex((n) => n.id === siangLeader.id);
-        if (idxInSiang !== -1) siangCandidates.splice(idxInSiang, 1);
-        const idxInAvail = availableNurses.findIndex((n) => n.id === siangLeader.id);
-        if (idxInAvail !== -1) availableNurses.splice(idxInAvail, 1);
-      }
+      // Calculate target staffing for Pagi and Siang (balanced 50:50)
+      const totalWorkingToday = karuNurses.length + workingNonKaruToday.length;
+      const targetDailyPagi = Math.max(1, Math.ceil(totalWorkingToday / 2));
+      const targetDailySiang = totalWorkingToday - targetDailyPagi;
+      const targetNonKaruPagi = Math.max(0, targetDailyPagi - karuNurses.length);
 
-      // Ensure at least one CITO nurse for Siang if isolation machines are active
-      if (hasIsoMachines) {
-        const citoNurseSiang = siangCandidates.find((n) => FairSchedulerEngine.hasCitoDuty(n));
-        if (citoNurseSiang && !selectedSiang.some((s) => s.id === citoNurseSiang.id)) {
-          selectedSiang.push(citoNurseSiang);
-          const idxInSiang = siangCandidates.findIndex((n) => n.id === citoNurseSiang.id);
-          if (idxInSiang !== -1) siangCandidates.splice(idxInSiang, 1);
-          const idxInAvail = availableNurses.findIndex((n) => n.id === citoNurseSiang.id);
-          if (idxInAvail !== -1) availableNurses.splice(idxInAvail, 1);
+      // Monthly ideal target of Pagi shifts for each non-Karu nurse
+      // Ensures balanced distribution (e.g. 13 Pagi & 13 Siang in 26 workdays, or 13 Pagi & 14 Siang in 27 workdays)
+      const idealNonKaruPagi = (totalWorkdaysInMonth * targetNonKaruPagi) / Math.max(1, nonKaruNurses.length);
+
+      // Score non-Karu candidates for PAGI assignment today to achieve an optimal monthly balance:
+      const scoredCandidates = workingNonKaruToday.map((nurse) => {
+        let score = 0;
+        const pCount = pagiCount[nurse.id] || 0;
+        const sCount = siangCount[nurse.id] || 0;
+
+        // 1. Primary factor: Shift deficit between Siang and Pagi
+        // A nurse with more Siang shifts than Pagi shifts gets strong priority for Pagi
+        score += (sCount - pCount) * 100;
+
+        // 2. Secondary factor: Progress toward monthly ideal Pagi count
+        score += (idealNonKaruPagi - pCount) * 50;
+
+        // 3. Rest & rotation quality:
+        const prevShift = lastShiftOfNurse[nurse.id];
+        const sameShiftInfo = consecutiveSameShift[nurse.id] || { shift: 'NONE', count: 0 };
+
+        if (prevShift === 'LIBUR') {
+          // Off Sunday: fresh, high priority for Pagi
+          score += 25;
+        } else if (prevShift === 'PAGI') {
+          // Consecutive Pagi (17h rest): good, but if already 3+ days in Pagi, encourage rotation to Siang
+          if (sameShiftInfo.shift === 'PAGI' && sameShiftInfo.count >= 3) {
+            score -= 15;
+          } else {
+            score += 10;
+          }
+        } else if (prevShift === 'SIANG') {
+          // Siang to Pagi (12h turnaround from 19:00 to 07:00):
+          // Penalize so it is only chosen when necessary to maintain monthly fairness
+          score -= 40;
+          if (sameShiftInfo.shift === 'SIANG' && sameShiftInfo.count >= 3) {
+            score += 25; // soften penalty so nurse is not stuck in Siang indefinitely
+          }
+        }
+
+        // Small deterministic jitter for fair tie-breaking across nurses
+        score += (pseudoRandom(seedCounter++) - 0.5) * 5;
+
+        return { nurse, score };
+      });
+
+      // Sort descending by score (highest score gets PAGI)
+      scoredCandidates.sort((a, b) => b.score - a.score);
+
+      const chosenPagiNonKaru = scoredCandidates.slice(0, targetNonKaruPagi).map((x) => x.nurse);
+      const chosenSiangNonKaru = scoredCandidates.slice(targetNonKaruPagi).map((x) => x.nurse);
+
+      selectedPagi.push(...chosenPagiNonKaru);
+      selectedSiang.push(...chosenSiangNonKaru);
+
+      // If isolation machines are operational, ensure at least one CITO nurse in Pagi and Siang
+      const hasIsoMachines = activeMachines.some((m) => FairSchedulerEngine.isIsolationMachine(m));
+
+      // Ensure CITO nurse in Pagi if needed
+      if (hasIsoMachines && !selectedPagi.some((n) => FairSchedulerEngine.hasCitoDuty(n))) {
+        const citoInSiangIdx = selectedSiang.findIndex((n) => FairSchedulerEngine.hasCitoDuty(n));
+        if (citoInSiangIdx !== -1) {
+          const nonCitoInPagiIdx = selectedPagi.findIndex((n) => !isKaru(n) && !FairSchedulerEngine.hasCitoDuty(n));
+          if (nonCitoInPagiIdx !== -1) {
+            const citoNurse = selectedSiang.splice(citoInSiangIdx, 1)[0];
+            const nonCitoNurse = selectedPagi.splice(nonCitoInPagiIdx, 1)[0];
+            selectedPagi.push(citoNurse);
+            selectedSiang.push(nonCitoNurse);
+          }
         }
       }
 
-      while (selectedSiang.length < targetDailySiang && siangCandidates.length > 0) {
-        const nextNurse = siangCandidates.shift()!;
-        selectedSiang.push(nextNurse);
-        const idx = availableNurses.findIndex((n) => n.id === nextNurse.id);
-        if (idx !== -1) availableNurses.splice(idx, 1);
+      // Ensure at least one CITO nurse in Siang if isolation machines exist and multiple CITO nurses are working
+      if (hasIsoMachines && !selectedSiang.some((n) => FairSchedulerEngine.hasCitoDuty(n))) {
+        const citoInPagiIdx = selectedPagi.findIndex((n) => !isKaru(n) && FairSchedulerEngine.hasCitoDuty(n));
+        if (citoInPagiIdx !== -1) {
+          const nonCitoInSiangIdx = selectedSiang.findIndex((n) => !FairSchedulerEngine.hasCitoDuty(n));
+          if (nonCitoInSiangIdx !== -1) {
+            const citoNurse = selectedPagi.splice(citoInPagiIdx, 1)[0];
+            const nonCitoNurse = selectedSiang.splice(nonCitoInSiangIdx, 1)[0];
+            selectedSiang.push(citoNurse);
+            selectedPagi.push(nonCitoNurse);
+          }
+        }
       }
 
-      workingToday.push(...selectedSiang);
+      // Ensure leadership in Siang (Katim or Senior nurse)
+      const siangHasLeader = selectedSiang.some((n) => n.role === 'KATIM' || n.skillLevel === 'Senior');
+      if (!siangHasLeader && selectedSiang.length > 0) {
+        const leaderInPagiIdx = selectedPagi.findIndex(
+          (n) => !isKaru(n) && (n.role === 'KATIM' || n.skillLevel === 'Senior')
+        );
+        if (leaderInPagiIdx !== -1) {
+          const juniorInSiangIdx = selectedSiang.findIndex((n) => n.skillLevel === 'Junior');
+          if (juniorInSiangIdx !== -1) {
+            const leaderNurse = selectedPagi.splice(leaderInPagiIdx, 1)[0];
+            const juniorNurse = selectedSiang.splice(juniorInSiangIdx, 1)[0];
+            selectedSiang.push(leaderNurse);
+            selectedPagi.push(juniorNurse);
+          }
+        }
+      }
 
-      // 3. Remaining active nurses get LIBUR (Off)
-      const offNurses = activeNurses.filter((n) => !workingToday.some((w) => w.id === n.id));
-
-      // Allocate machines for PAGI shift
-      const pagiMachineAllocations = this.allocateMachinesFairly(
+      // Allocate machines for PAGI
+      const pagiMachineAllocations = this.allocateMachinesWithOptions(
         selectedPagi,
-        activeMachines,
+        machines,
         day,
         'PAGI',
         fourMachineTurnTracker,
-        isolationTurnTracker
+        isolationTurnTracker,
+        lastDayIsolation,
+        { rotateBays: true, shuffleNurses: true, leaderLighterLoad: true }
       );
 
-      // Allocate machines for SIANG shift
-      const siangMachineAllocations = this.allocateMachinesFairly(
+      // Allocate machines for SIANG
+      const siangMachineAllocations = this.allocateMachinesWithOptions(
         selectedSiang,
-        activeMachines,
+        machines,
         day,
         'SIANG',
         fourMachineTurnTracker,
-        isolationTurnTracker
+        isolationTurnTracker,
+        lastDayIsolation,
+        { rotateBays: true, shuffleNurses: true, leaderLighterLoad: true }
       );
 
-      // Build assignments for Pagi
+      // Build assignments for PAGI
       selectedPagi.forEach((nurse, idx) => {
         const machinesForNurse = pagiMachineAllocations[nurse.id] || [];
-        const isLeader = idx === 0 || nurse.role === 'KARU' || nurse.role === 'KATIM';
+        const isHeadNurse = isKaru(nurse);
+        const isLeader = isHeadNurse || (karuNurses.length === 0 && (idx === 0 || nurse.role === 'KATIM'));
         const hasIso = machinesForNurse.some((mId) => {
           const m = activeMachines.find((mach) => mach.id === mId);
           return m && FairSchedulerEngine.isIsolationMachine(m);
         });
+
         const assignment: ShiftAssignment = {
           id: `${dateStr}-P-${nurse.id}`,
           date: dateStr,
@@ -220,7 +324,7 @@ export class FairSchedulerEngine {
           assignedMachineIds: machinesForNurse,
           isLeader,
           isWhatsAppSent: false,
-          notes: isLeader ? 'PJ Sif Pagi' : 'Perawat Pelaksana',
+          notes: isHeadNurse ? 'Kepala Ruangan (Sif Pagi)' : isLeader ? 'PJ Sif Pagi' : 'Perawat Pelaksana',
           specialDuty: nurse.specialDuty || (hasIso ? 'CITO' : null),
         };
         dailyAssigned.push(assignment);
@@ -228,10 +332,15 @@ export class FairSchedulerEngine {
         workingDaysCount[nurse.id] = (workingDaysCount[nurse.id] || 0) + 1;
         pagiCount[nurse.id] = (pagiCount[nurse.id] || 0) + 1;
         consecutiveWorkDays[nurse.id] = (consecutiveWorkDays[nurse.id] || 0) + 1;
+        if (lastShiftOfNurse[nurse.id] === 'PAGI') {
+          consecutiveSameShift[nurse.id] = { shift: 'PAGI', count: (consecutiveSameShift[nurse.id]?.count || 0) + 1 };
+        } else {
+          consecutiveSameShift[nurse.id] = { shift: 'PAGI', count: 1 };
+        }
         lastShiftOfNurse[nurse.id] = 'PAGI';
       });
 
-      // Build assignments for Siang
+      // Build assignments for SIANG
       selectedSiang.forEach((nurse, idx) => {
         const machinesForNurse = siangMachineAllocations[nurse.id] || [];
         const isLeader = idx === 0 || nurse.role === 'KATIM';
@@ -239,6 +348,7 @@ export class FairSchedulerEngine {
           const m = activeMachines.find((mach) => mach.id === mId);
           return m && FairSchedulerEngine.isIsolationMachine(m);
         });
+
         const assignment: ShiftAssignment = {
           id: `${dateStr}-S-${nurse.id}`,
           date: dateStr,
@@ -257,31 +367,15 @@ export class FairSchedulerEngine {
         workingDaysCount[nurse.id] = (workingDaysCount[nurse.id] || 0) + 1;
         siangCount[nurse.id] = (siangCount[nurse.id] || 0) + 1;
         consecutiveWorkDays[nurse.id] = (consecutiveWorkDays[nurse.id] || 0) + 1;
+        if (lastShiftOfNurse[nurse.id] === 'SIANG') {
+          consecutiveSameShift[nurse.id] = { shift: 'SIANG', count: (consecutiveSameShift[nurse.id]?.count || 0) + 1 };
+        } else {
+          consecutiveSameShift[nurse.id] = { shift: 'SIANG', count: 1 };
+        }
         lastShiftOfNurse[nurse.id] = 'SIANG';
       });
 
-      // Build assignments for Libur
-      offNurses.forEach((nurse) => {
-        const assignment: ShiftAssignment = {
-          id: `${dateStr}-L-${nurse.id}`,
-          date: dateStr,
-          shiftType: 'LIBUR',
-          nurseId: nurse.id,
-          nurseName: nurse.name,
-          nursePhone: nurse.phone,
-          assignedMachineIds: [],
-          isLeader: false,
-          isWhatsAppSent: false,
-          notes: 'Off / Hari Libur',
-          specialDuty: null,
-        };
-        dailyAssigned.push(assignment);
-
-        consecutiveWorkDays[nurse.id] = 0;
-        lastShiftOfNurse[nurse.id] = 'LIBUR';
-      });
-
-      // 4. Inactive nurses get CUTI
+      // Inactive nurses get CUTI
       const inactiveNurses = nurses.filter((n: Nurse) => !n.isActive);
       inactiveNurses.forEach((nurse: Nurse) => {
         const assignment: ShiftAssignment = {
@@ -345,14 +439,12 @@ export class FairSchedulerEngine {
       targetShift?: 'ALL' | 'PAGI' | 'SIANG';
     } = {}
   ): ShiftAssignment[] {
-    const activeMachines = machines.filter(
-      (m) =>
-        (m.status || 'AKTIF').toUpperCase() === 'AKTIF' &&
-        m.status !== 'MAINTENANCE' &&
-        m.status !== 'RUSAK' &&
-        m.status !== 'TIDAK_DIGUNAKAN'
-    );
-    if (activeMachines.length === 0) return currentAssignments;
+    const hasActiveMachines = machines.some((m) => {
+      const p = getMachineStatusForShift(m, 'PAGI');
+      const s = getMachineStatusForShift(m, 'SIANG');
+      return p === 'AKTIF' || s === 'AKTIF';
+    });
+    if (!hasActiveMachines) return currentAssignments;
 
     const targetShift = options.targetShift || 'ALL';
 
@@ -420,7 +512,7 @@ export class FairSchedulerEngine {
       const pagiAlloc = (targetShift === 'ALL' || targetShift === 'PAGI') && pagiNurses.length > 0
         ? this.allocateMachinesWithOptions(
             pagiNurses,
-            activeMachines,
+            machines,
             dayNum,
             'PAGI',
             fourMachineTracker,
@@ -434,7 +526,7 @@ export class FairSchedulerEngine {
       const siangAlloc = (targetShift === 'ALL' || targetShift === 'SIANG') && siangNurses.length > 0
         ? this.allocateMachinesWithOptions(
             siangNurses,
-            activeMachines,
+            machines,
             dayNum,
             'SIANG',
             fourMachineTracker,
@@ -559,14 +651,15 @@ export class FairSchedulerEngine {
   ): Record<number, number[]> {
     if (nursesOnShift.length === 0 || activeMachines.length === 0) return {};
 
-    // Strictly filter to active machines that are operational for this shift
+    // Strictly filter to active machines that are operational for this specific shift
     const strictlyActiveMachines = activeMachines.filter((m) => {
-      const isActive =
-        (m.status || 'AKTIF').toUpperCase() === 'AKTIF' &&
-        m.status !== 'MAINTENANCE' &&
-        m.status !== 'RUSAK' &&
-        m.status !== 'TIDAK_DIGUNAKAN';
-      if (!isActive) return false;
+      // Shift-specific status check
+      const shiftStatus =
+        shiftType === 'PAGI' || shiftType === 'SIANG'
+          ? getMachineStatusForShift(m, shiftType)
+          : (m.status || 'AKTIF');
+
+      if (shiftStatus !== 'AKTIF') return false;
 
       // Filter by operational shift if specified
       if (shiftType === 'PAGI' && m.operationalShift === 'SIANG') {

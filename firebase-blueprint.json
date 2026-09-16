@@ -44,6 +44,8 @@
         "bay": { "type": "string", "description": "Bay location" },
         "category": { "type": "string", "description": "REGULER, HEPATITIS_B, HEPATITIS_C, ISOLASI" },
         "status": { "type": "string", "description": "AKTIF, TIDAK_DIGUNAKAN, MAINTENANCE, RUSAK" },
+        "statusPagi": { "type": "string", "description": "Machine status specifically for Morning Shift (Pagi): AKTIF, TIDAK_DIGUNAKAN, MAINTENANCE, RUSAK" },
+        "statusSiang": { "type": "string", "description": "Machine status specifically for Afternoon Shift (Siang): AKTIF, TIDAK_DIGUNAKAN, MAINTENANCE, RUSAK" },
         "brandModel": { "type": "string", "description": "Brand and model" },
         "operationalShift": { "type": "string", "enum": ["ALL", "PAGI", "SIANG"], "description": "Operational shift schedule for this machine" },
         "notes": { "type": "string", "description": "Maintenance notes" }

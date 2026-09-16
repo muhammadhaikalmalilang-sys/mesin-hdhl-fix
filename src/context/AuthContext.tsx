@@ -93,7 +93,8 @@ export const isPermanentAdminEmail = (rawEmail?: string | null): boolean => {
   return (
     clean === 'emhaprojectart@gmail.com' ||
     clean === 'emhaprojectart@gamil.com' ||
-    clean === 'jumatlagipremium@gmail.com'
+    clean === 'jumatlagipremium@gmail.com' ||
+    clean === 'muhammadhaikalmalilang@gmail.com'
   );
 };
 
@@ -551,7 +552,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (!foundAccount) {
         throw new Error(
-          `Akun "${cleanId}" belum terdaftar. Silakan periksa kembali email/ID Anda atau klik tab "Daftar Akun Baru" untuk mendaftar.`
+          `Akun "${cleanId}" belum terdaftar di sistem HemoShift HD. Pembuatan akun baru hanya dapat dilakukan oleh Administrator Sistem. Silakan hubungi Administrator untuk mendaftarkan akun staf Anda.`
         );
       }
 

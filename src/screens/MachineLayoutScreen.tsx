@@ -9,6 +9,7 @@ import {
   MACHINE_STATUS_INFO,
   MACHINE_OPERATIONAL_SHIFT_INFO,
   ShiftType,
+  getMachineStatusForShift,
 } from '../types';
 import { MachineModal } from '../components/MachineModal';
 import { ManageBayModal } from '../components/ManageBayModal';
@@ -64,6 +65,8 @@ export const MachineLayoutScreen: React.FC = () => {
     selectDate,
     bays: contextBays,
     updateMachine,
+    updateMachineShiftStatus,
+    toggleMachineStatus,
     addMachine,
     deleteMachine,
     loadDefaultMachines,
@@ -220,19 +223,23 @@ export const MachineLayoutScreen: React.FC = () => {
 
   // Machines operational for Pagi / Siang / Master
   const machinesForCurrentShift = useMemo(() => {
-    return machines.filter((m) => {
-      if (activeTab === 'PAGI' && m.operationalShift === 'SIANG') return false;
-      if (activeTab === 'SIANG' && m.operationalShift === 'PAGI') return false;
-      return true;
-    });
-  }, [machines, activeTab]);
+    // Show all unit machines so users can configure & view status for Sif Pagi, Sif Siang, or Master
+    return machines;
+  }, [machines]);
 
   // Filtered machines according to activeTab and user filters
   const filteredMachines = useMemo(() => {
     const list = machinesForCurrentShift.filter((m) => {
+      const effectiveStatus =
+        activeTab === 'PAGI'
+          ? getMachineStatusForShift(m, 'PAGI')
+          : activeTab === 'SIANG'
+          ? getMachineStatusForShift(m, 'SIANG')
+          : m.status;
+
       if (selectedBayFilter !== 'ALL' && m.bay !== selectedBayFilter) return false;
       if (selectedCategoryFilter !== 'ALL' && m.category !== selectedCategoryFilter) return false;
-      if (selectedStatusFilter !== 'ALL' && m.status !== selectedStatusFilter) return false;
+      if (selectedStatusFilter !== 'ALL' && effectiveStatus !== selectedStatusFilter) return false;
       if (selectedShiftOperationalFilter !== 'ALL' && (m.operationalShift || 'ALL') !== selectedShiftOperationalFilter) return false;
 
       // Filter by assignment status in shift mode
@@ -244,7 +251,7 @@ export const MachineLayoutScreen: React.FC = () => {
 
         if (shiftStatusFilter === 'ASSIGNED' && !assigned) return false;
         if (shiftStatusFilter === 'UNASSIGNED') {
-          const isOper = !m.status || m.status === 'AKTIF';
+          const isOper = effectiveStatus === 'AKTIF';
           if (!isOper || assigned) return false;
         }
         if (shiftStatusFilter === 'ISOLASI' && m.category !== 'ISOLASI' && m.category !== 'HEPATITIS_B' && m.category !== 'HEPATITIS_C') {
@@ -256,13 +263,17 @@ export const MachineLayoutScreen: React.FC = () => {
       if (activeTab === 'COMPARE') {
         const pagiAssigned = pagiMachineNurseMap.get(m.id) || (m.code ? pagiMachineNurseMap.get(m.code.toUpperCase()) : undefined);
         const siangAssigned = siangMachineNurseMap.get(m.id) || (m.code ? siangMachineNurseMap.get(m.code.toUpperCase()) : undefined);
-        const isOper = !m.status || m.status === 'AKTIF';
+        const pagiActive = getMachineStatusForShift(m, 'PAGI') === 'AKTIF';
+        const siangActive = getMachineStatusForShift(m, 'SIANG') === 'AKTIF';
 
         if (compareDisparityFilter === 'INCOMPLETE') {
-          if (!isOper) return false;
-          if (pagiAssigned && siangAssigned) return false;
+          const pagiNeeds = pagiActive && !pagiAssigned;
+          const siangNeeds = siangActive && !siangAssigned;
+          if (!pagiNeeds && !siangNeeds) return false;
         } else if (compareDisparityFilter === 'COMPLETE') {
-          if (!pagiAssigned || !siangAssigned) return false;
+          const pagiOk = !pagiActive || !!pagiAssigned;
+          const siangOk = !siangActive || !!siangAssigned;
+          if (!pagiOk || !siangOk) return false;
         } else if (compareDisparityFilter === 'DIFFERENT') {
           if (!pagiAssigned || !siangAssigned) return false;
           if (pagiAssigned.nurseName === siangAssigned.nurseName) return false;
@@ -319,8 +330,7 @@ export const MachineLayoutScreen: React.FC = () => {
     const brokenAll = machines.filter((m) => m.status === 'RUSAK').length;
 
     // Sif Pagi stats
-    const pagiEligible = machines.filter((m) => m.operationalShift !== 'SIANG');
-    const pagiActive = pagiEligible.filter((m) => m.status === 'AKTIF');
+    const pagiActive = machines.filter((m) => getMachineStatusForShift(m, 'PAGI') === 'AKTIF');
     const pagiAssigned = pagiActive.filter((m) => {
       return (
         pagiMachineNurseMap.get(m.id) ||
@@ -331,8 +341,7 @@ export const MachineLayoutScreen: React.FC = () => {
     const pagiUnassigned = pagiActive.length - pagiAssigned.length;
 
     // Sif Siang stats
-    const siangEligible = machines.filter((m) => m.operationalShift !== 'PAGI');
-    const siangActive = siangEligible.filter((m) => m.status === 'AKTIF');
+    const siangActive = machines.filter((m) => getMachineStatusForShift(m, 'SIANG') === 'AKTIF');
     const siangAssigned = siangActive.filter((m) => {
       return (
         siangMachineNurseMap.get(m.id) ||
@@ -344,8 +353,10 @@ export const MachineLayoutScreen: React.FC = () => {
 
     // Compare stats
     const fullyAllocatedBothShifts = machines.filter((m) => {
-      const isPagiOk = m.operationalShift === 'SIANG' || pagiMachineNurseMap.get(m.id);
-      const isSiangOk = m.operationalShift === 'PAGI' || siangMachineNurseMap.get(m.id);
+      const isPagiActive = getMachineStatusForShift(m, 'PAGI') === 'AKTIF';
+      const isSiangActive = getMachineStatusForShift(m, 'SIANG') === 'AKTIF';
+      const isPagiOk = !isPagiActive || pagiMachineNurseMap.get(m.id);
+      const isSiangOk = !isSiangActive || siangMachineNurseMap.get(m.id);
       return isPagiOk && isSiangOk;
     }).length;
 
@@ -354,12 +365,12 @@ export const MachineLayoutScreen: React.FC = () => {
       activeAll,
       maintenanceAll,
       brokenAll,
-      pagiEligibleCount: pagiEligible.length,
+      pagiEligibleCount: machines.length,
       pagiActiveCount: pagiActive.length,
       pagiAssignedCount: pagiAssigned.length,
       pagiUnassignedCount: pagiUnassigned,
       pagiNurseCount: pagiNurses.length,
-      siangEligibleCount: siangEligible.length,
+      siangEligibleCount: machines.length,
       siangActiveCount: siangActive.length,
       siangAssignedCount: siangAssigned.length,
       siangUnassignedCount: siangUnassigned,
@@ -369,20 +380,54 @@ export const MachineLayoutScreen: React.FC = () => {
   }, [machines, pagiMachineNurseMap, siangMachineNurseMap, pagiNurses, siangNurses]);
 
   // Status toggle handler
-  const handleToggleStatus = (machine: Machine) => {
+  const handleToggleStatus = (machine: Machine, targetShift?: 'PAGI' | 'SIANG') => {
     if (!isAdmin) return;
-    const nextStatus: MachineStatus =
-      machine.status === 'AKTIF'
-        ? 'MAINTENANCE'
-        : machine.status === 'MAINTENANCE'
-        ? 'RUSAK'
-        : 'AKTIF';
+    const shift = targetShift || (activeTab === 'SIANG' ? 'SIANG' : activeTab === 'PAGI' ? 'PAGI' : undefined);
 
-    updateMachine({
-      ...machine,
-      status: nextStatus,
-    });
-    showToast(`Status ${machine.code} diubah menjadi ${MACHINE_STATUS_INFO[nextStatus].label}`, 'info');
+    if (shift) {
+      const currentStatus = getMachineStatusForShift(machine, shift);
+      const nextStatus: MachineStatus =
+        currentStatus === 'AKTIF'
+          ? 'TIDAK_DIGUNAKAN'
+          : currentStatus === 'TIDAK_DIGUNAKAN'
+          ? 'MAINTENANCE'
+          : currentStatus === 'MAINTENANCE'
+          ? 'RUSAK'
+          : 'AKTIF';
+
+      updateMachineShiftStatus(machine.id, shift, nextStatus);
+      showToast(
+        `Status ${machine.code} Sif ${shift === 'PAGI' ? 'Pagi' : 'Siang'} diubah menjadi: ${MACHINE_STATUS_INFO[nextStatus].label}`,
+        'info'
+      );
+    } else {
+      const nextStatus: MachineStatus =
+        machine.status === 'AKTIF'
+          ? 'TIDAK_DIGUNAKAN'
+          : machine.status === 'TIDAK_DIGUNAKAN'
+          ? 'MAINTENANCE'
+          : machine.status === 'MAINTENANCE'
+          ? 'RUSAK'
+          : 'AKTIF';
+
+      updateMachine({
+        ...machine,
+        status: nextStatus,
+      });
+      showToast(`Status master ${machine.code} diubah menjadi ${MACHINE_STATUS_INFO[nextStatus].label}`, 'info');
+    }
+  };
+
+  // Quick toggle between Aktif and Tidak Digunakan for specific shift
+  const handleQuickToggleActiveForShift = (machine: Machine, shift: 'PAGI' | 'SIANG') => {
+    if (!isAdmin) return;
+    const current = getMachineStatusForShift(machine, shift);
+    const next: MachineStatus = current === 'AKTIF' ? 'TIDAK_DIGUNAKAN' : 'AKTIF';
+    updateMachineShiftStatus(machine.id, shift, next);
+    showToast(
+      `${machine.code} di Sif ${shift === 'PAGI' ? 'Pagi' : 'Siang'} sekarang: ${MACHINE_STATUS_INFO[next].label}`,
+      next === 'AKTIF' ? 'success' : 'info'
+    );
   };
 
   // Open Add Machine Modal with optional shift & bay context
@@ -1014,6 +1059,37 @@ export const MachineLayoutScreen: React.FC = () => {
               <ShieldAlert className="w-3.5 h-3.5" />
               <span>Ruang Isolasi & Hep</span>
             </button>
+
+            {/* Quick Filter Status Sif */}
+            <div className="h-4 w-px bg-slate-300 mx-1 hidden sm:block" />
+
+            <button
+              onClick={() => setSelectedStatusFilter((prev) => (prev === 'AKTIF' ? 'ALL' : 'AKTIF'))}
+              className={`px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                selectedStatusFilter === 'AKTIF'
+                  ? 'bg-emerald-600 text-white shadow-2xs'
+                  : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
+              }`}
+              title="Tampilkan hanya mesin aktif pada sif ini"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              <span>Aktif Sif ({activeTab === 'PAGI' ? stats.pagiActiveCount : stats.siangActiveCount})</span>
+            </button>
+
+            <button
+              onClick={() => setSelectedStatusFilter((prev) => (prev === 'TIDAK_DIGUNAKAN' ? 'ALL' : 'TIDAK_DIGUNAKAN'))}
+              className={`px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                selectedStatusFilter === 'TIDAK_DIGUNAKAN'
+                  ? 'bg-slate-700 text-white shadow-2xs'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+              }`}
+              title="Tampilkan mesin yang tidak digunakan pada sif ini"
+            >
+              <PowerOff className="w-3.5 h-3.5" />
+              <span>
+                Off ({machines.filter((m) => getMachineStatusForShift(m, activeTab as 'PAGI' | 'SIANG') === 'TIDAK_DIGUNAKAN').length})
+              </span>
+            </button>
           </div>
         )}
 
@@ -1135,6 +1211,19 @@ export const MachineLayoutScreen: React.FC = () => {
                 <option value="ISOLASI">Isolasi Khusus</option>
               </select>
             )}
+
+            {/* Status Filter */}
+            <select
+              value={selectedStatusFilter}
+              onChange={(e) => setSelectedStatusFilter(e.target.value)}
+              className="px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-800 font-semibold"
+            >
+              <option value="ALL">Semua Status Mesin</option>
+              <option value="AKTIF">🟢 Aktif (Siap Pakai)</option>
+              <option value="TIDAK_DIGUNAKAN">⚪ Tidak Digunakan (Off)</option>
+              <option value="MAINTENANCE">🟡 Maintenance</option>
+              <option value="RUSAK">🔴 Rusak</option>
+            </select>
 
             {activeTab === 'MASTER' && (
               <select
@@ -1301,7 +1390,8 @@ export const MachineLayoutScreen: React.FC = () => {
                             setEditingMachine(machine);
                             setIsModalOpen(true);
                           }}
-                          onToggleStatus={() => handleToggleStatus(machine)}
+                          onToggleStatus={() => handleToggleStatus(machine, activeTab === 'MASTER' ? undefined : currentActiveShift)}
+                          onQuickToggleActive={() => handleQuickToggleActiveForShift(machine, currentActiveShift)}
                           onDelete={() => setMachineToDelete(machine)}
                           onAssign={() =>
                             setAssigningState({
@@ -1333,7 +1423,8 @@ export const MachineLayoutScreen: React.FC = () => {
                     setEditingMachine(machine);
                     setIsModalOpen(true);
                   }}
-                  onToggleStatus={() => handleToggleStatus(machine)}
+                  onToggleStatus={() => handleToggleStatus(machine, activeTab === 'MASTER' ? undefined : currentActiveShift)}
+                  onQuickToggleActive={() => handleQuickToggleActiveForShift(machine, currentActiveShift)}
                   onDelete={() => setMachineToDelete(machine)}
                   onAssign={() =>
                     setAssigningState({
@@ -1357,8 +1448,11 @@ export const MachineLayoutScreen: React.FC = () => {
                       <th className="py-3 px-3">Nama Mesin</th>
                       <th className="py-3 px-3">Ruangan / Bay</th>
                       <th className="py-3 px-3">Kategori Infeksius</th>
-                      <th className="py-3 px-3">Status Mesin</th>
-                      <th className="py-3 px-3">Operasional Sif</th>
+                      <th className="py-3 px-3">
+                        {activeTab === 'MASTER' ? 'Status Mesin Master' : `Status Sif ${activeTab === 'PAGI' ? 'Pagi' : 'Siang'}`}
+                      </th>
+                      <th className="py-3 px-3">Status Sif Lain</th>
+                      <th className="py-3 px-3">Jadwal Sif</th>
                       {activeTab !== 'MASTER' && (
                         <th className="py-3 px-3">PJ Perawat ({activeTab === 'PAGI' ? 'Sif Pagi' : 'Sif Siang'})</th>
                       )}
@@ -1374,15 +1468,26 @@ export const MachineLayoutScreen: React.FC = () => {
                           ? currentMachineNurseMap.get(m.code.toUpperCase()) || currentMachineNurseMap.get(m.code.toLowerCase())
                           : undefined);
                       const catInfo = MACHINE_CATEGORY_INFO[m.category];
-                      const statusInfo = MACHINE_STATUS_INFO[m.status];
                       const shiftInfo = MACHINE_OPERATIONAL_SHIFT_INFO[m.operationalShift || 'ALL'];
                       const isIso = m.category === 'ISOLASI';
+
+                      const effectiveStatus =
+                        activeTab === 'PAGI'
+                          ? getMachineStatusForShift(m, 'PAGI')
+                          : activeTab === 'SIANG'
+                          ? getMachineStatusForShift(m, 'SIANG')
+                          : m.status;
+                      const statusInfo = MACHINE_STATUS_INFO[effectiveStatus];
+
+                      const otherShift = activeTab === 'PAGI' ? 'SIANG' : 'PAGI';
+                      const otherStatus = getMachineStatusForShift(m, otherShift);
+                      const otherStatusInfo = MACHINE_STATUS_INFO[otherStatus];
 
                       return (
                         <tr
                           key={m.id}
                           className={`hover:bg-slate-50 font-medium ${
-                            isIso ? 'bg-rose-50/40' : m.status !== 'AKTIF' ? 'bg-slate-50/70 opacity-80' : ''
+                            isIso ? 'bg-rose-50/40' : effectiveStatus !== 'AKTIF' ? 'bg-slate-50/70 opacity-80' : ''
                           }`}
                         >
                           <td className="py-2.5 px-3 font-mono font-black text-slate-900 text-sm">
@@ -1402,12 +1507,52 @@ export const MachineLayoutScreen: React.FC = () => {
                             </span>
                           </td>
                           <td className="py-2.5 px-3">
-                            <span
-                              className={`text-[10px] px-2 py-0.5 rounded-md font-bold border inline-flex items-center gap-1 ${statusInfo.colorClass}`}
-                            >
-                              <span className={`w-1.5 h-1.5 rounded-full ${statusInfo.dotClass}`} />
-                              {statusInfo.label}
-                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <span
+                                className={`text-[10px] px-2 py-0.5 rounded-md font-bold border inline-flex items-center gap-1 ${statusInfo.colorClass}`}
+                              >
+                                <span className={`w-1.5 h-1.5 rounded-full ${statusInfo.dotClass}`} />
+                                {statusInfo.label}
+                              </span>
+                              {isAdmin && activeTab !== 'MASTER' && (
+                                <button
+                                  onClick={() => handleQuickToggleActiveForShift(m, activeTab as 'PAGI' | 'SIANG')}
+                                  className={`text-[9px] font-black px-1.5 py-0.5 rounded transition-colors ${
+                                    effectiveStatus === 'AKTIF'
+                                      ? 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                                      : 'bg-emerald-100 hover:bg-emerald-200 text-emerald-800'
+                                  }`}
+                                  title={`Klik untuk ubah status di Sif ${activeTab === 'PAGI' ? 'Pagi' : 'Siang'}`}
+                                >
+                                  {effectiveStatus === 'AKTIF' ? 'Set Off' : 'Set Aktif'}
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            {activeTab === 'MASTER' ? (
+                              <div className="text-[10px] space-y-0.5">
+                                <div className="flex items-center gap-1">
+                                  <span className="font-bold text-slate-600">Pagi:</span>
+                                  <span className={MACHINE_STATUS_INFO[getMachineStatusForShift(m, 'PAGI')].label}>
+                                    {MACHINE_STATUS_INFO[getMachineStatusForShift(m, 'PAGI')].label}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <span className="font-bold text-slate-600">Siang:</span>
+                                  <span className={MACHINE_STATUS_INFO[getMachineStatusForShift(m, 'SIANG')].label}>
+                                    {MACHINE_STATUS_INFO[getMachineStatusForShift(m, 'SIANG')].label}
+                                  </span>
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="text-[10px] font-bold text-slate-600">
+                                Sif {otherShift === 'PAGI' ? 'Pagi' : 'Siang'}:{' '}
+                                <span className={otherStatus === 'AKTIF' ? 'text-emerald-700 font-black' : 'text-slate-500'}>
+                                  {otherStatusInfo.label}
+                                </span>
+                              </span>
+                            )}
                           </td>
                           <td className="py-2.5 px-3">
                             <span className={`text-[10px] px-2 py-0.5 rounded-md font-bold border ${shiftInfo.badgeClass}`}>
@@ -1445,7 +1590,7 @@ export const MachineLayoutScreen: React.FC = () => {
                                     </button>
                                   )}
                                 </div>
-                              ) : m.status === 'AKTIF' ? (
+                              ) : effectiveStatus === 'AKTIF' ? (
                                 <div className="flex items-center gap-1.5">
                                   <span className="text-[11px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded">
                                     Belum Ada PJ
@@ -1464,6 +1609,10 @@ export const MachineLayoutScreen: React.FC = () => {
                                     </button>
                                   )}
                                 </div>
+                              ) : effectiveStatus === 'TIDAK_DIGUNAKAN' ? (
+                                <span className="text-[11px] text-slate-500 italic bg-slate-100 px-2 py-0.5 rounded font-medium">
+                                  Tidak Digunakan ({activeTab === 'PAGI' ? 'Pagi' : 'Siang'})
+                                </span>
                               ) : (
                                 <span className="text-[11px] text-slate-500 italic">Non-Aktif</span>
                               )}
@@ -1483,9 +1632,9 @@ export const MachineLayoutScreen: React.FC = () => {
                                   <Edit2 className="w-3.5 h-3.5" />
                                 </button>
                                 <button
-                                  onClick={() => handleToggleStatus(m)}
+                                  onClick={() => handleToggleStatus(m, activeTab === 'MASTER' ? undefined : (activeTab as 'PAGI' | 'SIANG'))}
                                   className="p-1 text-slate-600 hover:text-amber-600 hover:bg-amber-50 rounded transition-colors"
-                                  title="Ganti Status"
+                                  title={`Ganti Status Sif ${activeTab === 'MASTER' ? 'Master' : activeTab}`}
                                 >
                                   <Wrench className="w-3.5 h-3.5" />
                                 </button>
@@ -1549,12 +1698,15 @@ export const MachineLayoutScreen: React.FC = () => {
                         (m.code ? siangMachineNurseMap.get(m.code.toUpperCase()) : undefined);
 
                       const catInfo = MACHINE_CATEGORY_INFO[m.category];
-                      const statusInfo = MACHINE_STATUS_INFO[m.status];
                       const isIso = m.category === 'ISOLASI';
-                      const isOperational = !m.status || m.status === 'AKTIF';
 
-                      const pagiEligible = m.operationalShift !== 'SIANG';
-                      const siangEligible = m.operationalShift !== 'PAGI';
+                      const pagiStatus = getMachineStatusForShift(m, 'PAGI');
+                      const siangStatus = getMachineStatusForShift(m, 'SIANG');
+                      const pagiStatusInfo = MACHINE_STATUS_INFO[pagiStatus];
+                      const siangStatusInfo = MACHINE_STATUS_INFO[siangStatus];
+
+                      const isPagiActive = pagiStatus === 'AKTIF';
+                      const isSiangActive = siangStatus === 'AKTIF';
 
                       return (
                         <tr key={m.id} className="hover:bg-slate-50/70 font-medium">
@@ -1577,22 +1729,48 @@ export const MachineLayoutScreen: React.FC = () => {
                             </div>
                           </td>
 
-                          {/* Machine Status */}
-                          <td className="py-3 px-3 align-top">
-                            <span
-                              className={`text-[10px] px-2 py-0.5 rounded-md font-bold border inline-flex items-center gap-1 ${statusInfo.colorClass}`}
-                            >
-                              <span className={`w-1.5 h-1.5 rounded-full ${statusInfo.dotClass}`} />
-                              {statusInfo.label}
-                            </span>
+                          {/* Machine Status (Both Shifts) */}
+                          <td className="py-3 px-3 align-top space-y-1">
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-[10px] text-sky-800 font-bold flex items-center gap-1">
+                                <Sun className="w-3 h-3 text-amber-500" /> Pagi:
+                              </span>
+                              <span
+                                className={`text-[9px] px-1.5 py-0.2 rounded font-bold border inline-flex items-center gap-1 ${pagiStatusInfo.colorClass}`}
+                              >
+                                <span className={`w-1 h-1 rounded-full ${pagiStatusInfo.dotClass}`} />
+                                {pagiStatusInfo.label}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-[10px] text-amber-900 font-bold flex items-center gap-1">
+                                <Sunset className="w-3 h-3 text-amber-600" /> Siang:
+                              </span>
+                              <span
+                                className={`text-[9px] px-1.5 py-0.2 rounded font-bold border inline-flex items-center gap-1 ${siangStatusInfo.colorClass}`}
+                              >
+                                <span className={`w-1 h-1 rounded-full ${siangStatusInfo.dotClass}`} />
+                                {siangStatusInfo.label}
+                              </span>
+                            </div>
                           </td>
 
                           {/* Sif Pagi Column */}
                           <td className="py-3 px-4 bg-sky-50/30 border-l border-r border-sky-100 align-top">
-                            {!pagiEligible ? (
-                              <span className="text-xs text-slate-400 italic">Tidak beroperasi di Sif Pagi</span>
-                            ) : !isOperational ? (
-                              <span className="text-xs text-slate-400 italic">Mesin Non-Aktif</span>
+                            {!isPagiActive ? (
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs text-slate-500 italic bg-slate-100 px-2 py-1 rounded font-medium">
+                                  {pagiStatus === 'TIDAK_DIGUNAKAN' ? '⚪ Off di Sif Pagi' : pagiStatusInfo.label}
+                                </span>
+                                {isAdmin && (
+                                  <button
+                                    onClick={() => handleQuickToggleActiveForShift(m, 'PAGI')}
+                                    className="text-[10px] font-bold text-emerald-700 hover:text-emerald-900 px-2 py-1 bg-white hover:bg-emerald-50 rounded border border-emerald-200 transition-colors"
+                                  >
+                                    Aktifkan
+                                  </button>
+                                )}
+                              </div>
                             ) : pagiAssigned ? (
                               <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-2">
@@ -1630,17 +1808,26 @@ export const MachineLayoutScreen: React.FC = () => {
                                   Belum Ada PJ
                                 </span>
                                 {isAdmin && (
-                                  <button
-                                    onClick={() =>
-                                      setAssigningState({
-                                        machine: m,
-                                        targetShift: 'PAGI',
-                                      })
-                                    }
-                                    className="text-[10px] font-black px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors"
-                                  >
-                                    Tugaskan
-                                  </button>
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      onClick={() => handleQuickToggleActiveForShift(m, 'PAGI')}
+                                      className="text-[10px] font-bold text-slate-600 hover:text-slate-800 px-1.5 py-1 bg-white border border-slate-200 rounded"
+                                      title="Nonaktifkan hanya di Sif Pagi"
+                                    >
+                                      Off
+                                    </button>
+                                    <button
+                                      onClick={() =>
+                                        setAssigningState({
+                                          machine: m,
+                                          targetShift: 'PAGI',
+                                        })
+                                      }
+                                      className="text-[10px] font-black px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors"
+                                    >
+                                      Tugaskan
+                                    </button>
+                                  </div>
                                 )}
                               </div>
                             )}
@@ -1648,10 +1835,20 @@ export const MachineLayoutScreen: React.FC = () => {
 
                           {/* Sif Siang Column */}
                           <td className="py-3 px-4 bg-amber-50/30 border-r border-amber-100 align-top">
-                            {!siangEligible ? (
-                              <span className="text-xs text-slate-400 italic">Tidak beroperasi di Sif Siang</span>
-                            ) : !isOperational ? (
-                              <span className="text-xs text-slate-400 italic">Mesin Non-Aktif</span>
+                            {!isSiangActive ? (
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs text-slate-500 italic bg-slate-100 px-2 py-1 rounded font-medium">
+                                  {siangStatus === 'TIDAK_DIGUNAKAN' ? '⚪ Off di Sif Siang' : siangStatusInfo.label}
+                                </span>
+                                {isAdmin && (
+                                  <button
+                                    onClick={() => handleQuickToggleActiveForShift(m, 'SIANG')}
+                                    className="text-[10px] font-bold text-emerald-700 hover:text-emerald-900 px-2 py-1 bg-white hover:bg-emerald-50 rounded border border-emerald-200 transition-colors"
+                                  >
+                                    Aktifkan
+                                  </button>
+                                )}
+                              </div>
                             ) : siangAssigned ? (
                               <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-2">
@@ -1689,17 +1886,26 @@ export const MachineLayoutScreen: React.FC = () => {
                                   Belum Ada PJ
                                 </span>
                                 {isAdmin && (
-                                  <button
-                                    onClick={() =>
-                                      setAssigningState({
-                                        machine: m,
-                                        targetShift: 'SIANG',
-                                      })
-                                    }
-                                    className="text-[10px] font-black px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded transition-colors"
-                                  >
-                                    Tugaskan
-                                  </button>
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      onClick={() => handleQuickToggleActiveForShift(m, 'SIANG')}
+                                      className="text-[10px] font-bold text-slate-600 hover:text-slate-800 px-1.5 py-1 bg-white border border-slate-200 rounded"
+                                      title="Nonaktifkan hanya di Sif Siang"
+                                    >
+                                      Off
+                                    </button>
+                                    <button
+                                      onClick={() =>
+                                        setAssigningState({
+                                          machine: m,
+                                          targetShift: 'SIANG',
+                                        })
+                                      }
+                                      className="text-[10px] font-black px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded transition-colors"
+                                    >
+                                      Tugaskan
+                                    </button>
+                                  </div>
                                 )}
                               </div>
                             )}
@@ -1722,7 +1928,10 @@ export const MachineLayoutScreen: React.FC = () => {
                   siangMachineNurseMap.get(m.id) ||
                   (m.code ? siangMachineNurseMap.get(m.code.toUpperCase()) : undefined);
 
-                const isOperational = !m.status || m.status === 'AKTIF';
+                const pagiStatus = getMachineStatusForShift(m, 'PAGI');
+                const siangStatus = getMachineStatusForShift(m, 'SIANG');
+                const isPagiActive = pagiStatus === 'AKTIF';
+                const isSiangActive = siangStatus === 'AKTIF';
 
                 return (
                   <div key={m.id} className="bg-white rounded-2xl border-2 border-slate-300 p-3.5 shadow-xs flex flex-col justify-between">
@@ -1740,11 +1949,24 @@ export const MachineLayoutScreen: React.FC = () => {
                     {/* Split Columns */}
                     <div className="grid grid-cols-2 gap-2 my-3">
                       {/* Pagi */}
-                      <div className="p-2.5 rounded-xl bg-sky-50 border border-sky-200 flex flex-col justify-between">
+                      <div
+                        className={`p-2.5 rounded-xl border flex flex-col justify-between ${
+                          isPagiActive ? 'bg-sky-50 border-sky-200' : 'bg-slate-50 border-slate-200 opacity-80'
+                        }`}
+                      >
                         <div>
-                          <div className="flex items-center gap-1 text-sky-800 font-black text-[11px] mb-1">
-                            <Sun className="w-3 h-3 text-amber-500" />
-                            <span>Sif Pagi</span>
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="flex items-center gap-1 text-sky-800 font-black text-[11px]">
+                              <Sun className="w-3 h-3 text-amber-500" />
+                              <span>Sif Pagi</span>
+                            </div>
+                            <span
+                              className={`text-[9px] px-1.5 py-0.2 rounded font-bold ${
+                                isPagiActive ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-700'
+                              }`}
+                            >
+                              {isPagiActive ? 'Aktif' : 'Off'}
+                            </span>
                           </div>
                           {pagiAssigned ? (
                             <div>
@@ -1755,35 +1977,64 @@ export const MachineLayoutScreen: React.FC = () => {
                                 <span className="text-[9px] font-bold text-indigo-700">KATIM</span>
                               )}
                             </div>
-                          ) : isOperational ? (
+                          ) : isPagiActive ? (
                             <span className="text-[10px] font-black text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded">
                               Belum Ada PJ
                             </span>
                           ) : (
-                            <span className="text-[10px] text-slate-400">Non-Aktif</span>
+                            <span className="text-[10px] text-slate-500 italic">
+                              {pagiStatus === 'TIDAK_DIGUNAKAN' ? 'Off Sif Pagi' : 'Non-Aktif'}
+                            </span>
                           )}
                         </div>
-                        {isAdmin && isOperational && (
-                          <button
-                            onClick={() =>
-                              setAssigningState({
-                                machine: m,
-                                targetShift: 'PAGI',
-                              })
-                            }
-                            className="mt-2 text-[10px] font-bold text-blue-700 hover:text-blue-900 bg-white border border-blue-200 rounded py-0.5 transition-colors"
-                          >
-                            {pagiAssigned ? 'Ganti' : 'Tugaskan'}
-                          </button>
+                        {isAdmin && (
+                          <div className="mt-2 flex items-center gap-1">
+                            <button
+                              onClick={() => handleQuickToggleActiveForShift(m, 'PAGI')}
+                              className={`text-[9px] font-bold px-1.5 py-0.5 rounded border transition-colors ${
+                                isPagiActive
+                                  ? 'bg-white text-slate-600 hover:text-slate-900 border-slate-200'
+                                  : 'bg-emerald-600 text-white hover:bg-emerald-700 border-emerald-600'
+                              }`}
+                            >
+                              {isPagiActive ? 'Set Off' : 'Aktifkan'}
+                            </button>
+                            {isPagiActive && (
+                              <button
+                                onClick={() =>
+                                  setAssigningState({
+                                    machine: m,
+                                    targetShift: 'PAGI',
+                                  })
+                                }
+                                className="text-[9px] font-bold text-blue-700 hover:text-blue-900 bg-white border border-blue-200 rounded px-1.5 py-0.5 transition-colors flex-1"
+                              >
+                                {pagiAssigned ? 'Ganti' : 'Tugaskan'}
+                              </button>
+                            )}
+                          </div>
                         )}
                       </div>
 
                       {/* Siang */}
-                      <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 flex flex-col justify-between">
+                      <div
+                        className={`p-2.5 rounded-xl border flex flex-col justify-between ${
+                          isSiangActive ? 'bg-amber-50 border-amber-200' : 'bg-slate-50 border-slate-200 opacity-80'
+                        }`}
+                      >
                         <div>
-                          <div className="flex items-center gap-1 text-amber-900 font-black text-[11px] mb-1">
-                            <Sunset className="w-3 h-3 text-amber-600" />
-                            <span>Sif Siang</span>
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="flex items-center gap-1 text-amber-900 font-black text-[11px]">
+                              <Sunset className="w-3 h-3 text-amber-600" />
+                              <span>Sif Siang</span>
+                            </div>
+                            <span
+                              className={`text-[9px] px-1.5 py-0.2 rounded font-bold ${
+                                isSiangActive ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-700'
+                              }`}
+                            >
+                              {isSiangActive ? 'Aktif' : 'Off'}
+                            </span>
                           </div>
                           {siangAssigned ? (
                             <div>
@@ -1794,26 +2045,42 @@ export const MachineLayoutScreen: React.FC = () => {
                                 <span className="text-[9px] font-bold text-indigo-700">KATIM</span>
                               )}
                             </div>
-                          ) : isOperational ? (
+                          ) : isSiangActive ? (
                             <span className="text-[10px] font-black text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded">
                               Belum Ada PJ
                             </span>
                           ) : (
-                            <span className="text-[10px] text-slate-400">Non-Aktif</span>
+                            <span className="text-[10px] text-slate-500 italic">
+                              {siangStatus === 'TIDAK_DIGUNAKAN' ? 'Off Sif Siang' : 'Non-Aktif'}
+                            </span>
                           )}
                         </div>
-                        {isAdmin && isOperational && (
-                          <button
-                            onClick={() =>
-                              setAssigningState({
-                                machine: m,
-                                targetShift: 'SIANG',
-                              })
-                            }
-                            className="mt-2 text-[10px] font-bold text-amber-800 hover:text-amber-950 bg-white border border-amber-200 rounded py-0.5 transition-colors"
-                          >
-                            {siangAssigned ? 'Ganti' : 'Tugaskan'}
-                          </button>
+                        {isAdmin && (
+                          <div className="mt-2 flex items-center gap-1">
+                            <button
+                              onClick={() => handleQuickToggleActiveForShift(m, 'SIANG')}
+                              className={`text-[9px] font-bold px-1.5 py-0.5 rounded border transition-colors ${
+                                isSiangActive
+                                  ? 'bg-white text-slate-600 hover:text-slate-900 border-slate-200'
+                                  : 'bg-emerald-600 text-white hover:bg-emerald-700 border-emerald-600'
+                              }`}
+                            >
+                              {isSiangActive ? 'Set Off' : 'Aktifkan'}
+                            </button>
+                            {isSiangActive && (
+                              <button
+                                onClick={() =>
+                                  setAssigningState({
+                                    machine: m,
+                                    targetShift: 'SIANG',
+                                  })
+                                }
+                                className="text-[9px] font-bold text-amber-800 hover:text-amber-950 bg-white border border-amber-200 rounded px-1.5 py-0.5 transition-colors flex-1"
+                              >
+                                {siangAssigned ? 'Ganti' : 'Tugaskan'}
+                              </button>
+                            )}
+                          </div>
                         )}
                       </div>
                     </div>
@@ -2046,6 +2313,7 @@ interface MachineCardProps {
   isAdmin: boolean;
   onEdit: () => void;
   onToggleStatus: () => void;
+  onQuickToggleActive?: () => void;
   onDelete: () => void;
   onAssign: () => void;
 }
@@ -2058,6 +2326,7 @@ const MachineCard: React.FC<MachineCardProps> = ({
   isAdmin,
   onEdit,
   onToggleStatus,
+  onQuickToggleActive,
   onDelete,
   onAssign,
 }) => {
@@ -2069,12 +2338,23 @@ const MachineCard: React.FC<MachineCardProps> = ({
       : undefined);
 
   const catInfo = MACHINE_CATEGORY_INFO[machine.category];
-  const statusInfo = MACHINE_STATUS_INFO[machine.status];
   const shiftInfo = MACHINE_OPERATIONAL_SHIFT_INFO[machine.operationalShift || 'ALL'];
-  const isOperational =
-    !machine.status ||
-    machine.status.toUpperCase() === 'AKTIF' ||
-    (machine.status !== 'MAINTENANCE' && machine.status !== 'RUSAK' && machine.status !== 'TIDAK_DIGUNAKAN');
+
+  const pagiStatus = getMachineStatusForShift(machine, 'PAGI');
+  const siangStatus = getMachineStatusForShift(machine, 'SIANG');
+
+  const effectiveStatus = isMasterMode
+    ? machine.status
+    : activeShiftView === 'SIANG'
+    ? siangStatus
+    : pagiStatus;
+
+  const otherShift = activeShiftView === 'PAGI' ? 'SIANG' : 'PAGI';
+  const otherStatus = otherShift === 'PAGI' ? pagiStatus : siangStatus;
+
+  const statusInfo = MACHINE_STATUS_INFO[effectiveStatus];
+  const otherStatusInfo = MACHINE_STATUS_INFO[otherStatus];
+  const isOperational = effectiveStatus === 'AKTIF';
 
   const isIsolation = machine.category === 'ISOLASI';
   const isHepB = machine.category === 'HEPATITIS_B';
@@ -2084,7 +2364,7 @@ const MachineCard: React.FC<MachineCardProps> = ({
     <div
       className={`rounded-2xl p-4 border-2 transition-all relative flex flex-col justify-between shadow-xs ${
         !isOperational
-          ? 'bg-slate-100/90 border-slate-300 opacity-80'
+          ? 'bg-slate-100/90 border-slate-300 opacity-85'
           : isIsolation
           ? 'bg-rose-50/40 border-rose-300 ring-1 ring-rose-400/20'
           : assigned
@@ -2132,6 +2412,23 @@ const MachineCard: React.FC<MachineCardProps> = ({
           {/* Admin Controls */}
           {isAdmin && (
             <div className="flex items-center gap-0.5 shrink-0 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+              {onQuickToggleActive && !isMasterMode && (
+                <button
+                  onClick={onQuickToggleActive}
+                  className={`p-1.5 rounded-md transition-colors ${
+                    isOperational
+                      ? 'text-slate-600 hover:text-rose-600 hover:bg-white'
+                      : 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100'
+                  }`}
+                  title={
+                    isOperational
+                      ? `Non-aktifkan di Sif ${activeShiftView === 'PAGI' ? 'Pagi' : 'Siang'}`
+                      : `Aktifkan di Sif ${activeShiftView === 'PAGI' ? 'Pagi' : 'Siang'}`
+                  }
+                >
+                  <PowerOff className="w-3.5 h-3.5" />
+                </button>
+              )}
               <button
                 onClick={onEdit}
                 className="p-1.5 text-slate-600 hover:text-blue-700 hover:bg-white rounded-md transition-colors"
@@ -2142,7 +2439,7 @@ const MachineCard: React.FC<MachineCardProps> = ({
               <button
                 onClick={onToggleStatus}
                 className="p-1.5 text-slate-600 hover:text-amber-700 hover:bg-white rounded-md transition-colors"
-                title="Ganti Status (Aktif / Maintenance / Rusak)"
+                title={`Ganti Status Mesin ${!isMasterMode ? `(Sif ${activeShiftView === 'PAGI' ? 'Pagi' : 'Siang'})` : ''}`}
               >
                 <Wrench className="w-3.5 h-3.5" />
               </button>
@@ -2165,13 +2462,38 @@ const MachineCard: React.FC<MachineCardProps> = ({
           <span className={`text-[10px] px-2 py-0.5 rounded-md font-extrabold ${catInfo.badgeClass}`}>
             {catInfo.label}
           </span>
+
+          {/* Primary Status Badge */}
           <span
             className={`text-[10px] px-2 py-0.5 rounded-md border font-extrabold inline-flex items-center gap-1 ${statusInfo.colorClass}`}
           >
             <span className={`w-1.5 h-1.5 rounded-full ${statusInfo.dotClass}`} />
-            {statusInfo.label}
+            {!isMasterMode ? (
+              effectiveStatus === 'TIDAK_DIGUNAKAN' ? (
+                `Off Sif ${activeShiftView === 'PAGI' ? 'Pagi' : 'Siang'}`
+              ) : (
+                statusInfo.label
+              )
+            ) : (
+              statusInfo.label
+            )}
           </span>
-          {machine.operationalShift && machine.operationalShift !== 'ALL' && (
+
+          {/* Secondary Badge showing other shift status if different */}
+          {!isMasterMode && otherStatus !== effectiveStatus && (
+            <span
+              className={`text-[9px] px-1.5 py-0.5 rounded-md border font-bold ${
+                otherStatus === 'AKTIF'
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                  : 'bg-slate-100 text-slate-600 border-slate-200'
+              }`}
+              title={`Status di Sif ${otherShift === 'PAGI' ? 'Pagi' : 'Siang'}: ${otherStatusInfo.label}`}
+            >
+              {otherShift === 'PAGI' ? 'Pagi' : 'Siang'}: {otherStatus === 'AKTIF' ? 'Aktif' : 'Off'}
+            </span>
+          )}
+
+          {machine.operationalShift && machine.operationalShift !== 'ALL' && isMasterMode && (
             <span className={`text-[10px] px-2 py-0.5 rounded-md border font-extrabold ${shiftInfo.badgeClass}`}>
               {shiftInfo.shortLabel}
             </span>
@@ -2252,19 +2574,46 @@ const MachineCard: React.FC<MachineCardProps> = ({
                 <span className="text-[11px] font-black">Belum Ada PJ</span>
               </div>
               {isAdmin && (
+                <div className="flex items-center gap-1">
+                  {onQuickToggleActive && (
+                    <button
+                      onClick={onQuickToggleActive}
+                      className="text-[10px] font-bold px-1.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-amber-200 rounded transition-colors"
+                      title="Set mesin tidak digunakan untuk sif ini"
+                    >
+                      Off Sif
+                    </button>
+                  )}
+                  <button
+                    onClick={onAssign}
+                    className="text-[10px] font-black px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-md shadow-2xs transition-colors cursor-pointer"
+                    title="Tugaskan perawat untuk mesin ini"
+                  >
+                    Tugaskan
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : effectiveStatus === 'TIDAK_DIGUNAKAN' ? (
+            <div className="bg-slate-100 text-slate-700 p-2 rounded-xl text-xs flex items-center justify-between border border-slate-200">
+              <div className="flex items-center gap-1.5 font-semibold">
+                <PowerOff className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                <span className="text-[11px]">Tidak Digunakan (Sif {activeShiftView === 'PAGI' ? 'Pagi' : 'Siang'})</span>
+              </div>
+              {isAdmin && onQuickToggleActive && (
                 <button
-                  onClick={onAssign}
-                  className="text-[10px] font-black px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-md shadow-2xs transition-colors cursor-pointer"
-                  title="Tugaskan perawat untuk mesin ini"
+                  onClick={onQuickToggleActive}
+                  className="text-[10px] font-bold px-2 py-0.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded transition-colors"
+                  title="Aktifkan kembali mesin untuk sif ini"
                 >
-                  Tugaskan
+                  Aktifkan
                 </button>
               )}
             </div>
           ) : (
             <div className="bg-slate-200 text-slate-600 p-2 rounded-xl text-xs flex items-center gap-1.5 font-semibold">
               <PowerOff className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-              <span className="text-[11px]">Mesin Non-Aktif</span>
+              <span className="text-[11px]">Mesin Non-Aktif ({statusInfo.label})</span>
             </div>
           )}
         </div>

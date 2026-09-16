@@ -52,6 +52,8 @@ export const MachineModal: React.FC<MachineModalProps> = ({
   const [customBayInput, setCustomBayInput] = useState('');
   const [category, setCategory] = useState<MachineCategory>('REGULER');
   const [status, setStatus] = useState<MachineStatus>('AKTIF');
+  const [statusPagi, setStatusPagi] = useState<MachineStatus>('AKTIF');
+  const [statusSiang, setStatusSiang] = useState<MachineStatus>('AKTIF');
   const [operationalShift, setOperationalShift] = useState<MachineOperationalShift>('ALL');
   const [brandModel, setBrandModel] = useState('Fresenius 4008S');
   const [notes, setNotes] = useState('');
@@ -128,7 +130,9 @@ export const MachineModal: React.FC<MachineModalProps> = ({
       setIsCustomBay(false);
       setCustomBayInput('');
       setCategory(machine.category);
-      setStatus(machine.status);
+      setStatus(machine.status || 'AKTIF');
+      setStatusPagi(machine.statusPagi || machine.status || 'AKTIF');
+      setStatusSiang(machine.statusSiang || machine.status || 'AKTIF');
       setOperationalShift(machine.operationalShift || 'ALL');
       setBrandModel(machine.brandModel || 'Fresenius 4008S');
       setNotes(machine.notes || '');
@@ -141,8 +145,21 @@ export const MachineModal: React.FC<MachineModalProps> = ({
       setIsCustomBay(false);
       setCustomBayInput('');
       setCategory('REGULER');
-      setStatus('AKTIF');
-      setOperationalShift(defaultOperationalShift || 'ALL');
+      const initShift = defaultOperationalShift || 'ALL';
+      setOperationalShift(initShift);
+      if (initShift === 'PAGI') {
+        setStatus('AKTIF');
+        setStatusPagi('AKTIF');
+        setStatusSiang('TIDAK_DIGUNAKAN');
+      } else if (initShift === 'SIANG') {
+        setStatus('AKTIF');
+        setStatusPagi('TIDAK_DIGUNAKAN');
+        setStatusSiang('AKTIF');
+      } else {
+        setStatus('AKTIF');
+        setStatusPagi('AKTIF');
+        setStatusSiang('AKTIF');
+      }
       setBrandModel('Fresenius 4008S');
       setNotes('');
     }
@@ -183,6 +200,23 @@ export const MachineModal: React.FC<MachineModalProps> = ({
       addBay(finalBay, category, status);
     }
 
+    // Derive overall status and operational shift from statusPagi and statusSiang
+    const derivedOverallStatus: MachineStatus =
+      statusPagi === 'AKTIF' || statusSiang === 'AKTIF'
+        ? 'AKTIF'
+        : statusPagi === 'MAINTENANCE' || statusSiang === 'MAINTENANCE'
+        ? 'MAINTENANCE'
+        : statusPagi === 'RUSAK' && statusSiang === 'RUSAK'
+        ? 'RUSAK'
+        : 'TIDAK_DIGUNAKAN';
+
+    const derivedOperationalShift: MachineOperationalShift =
+      statusPagi === 'AKTIF' && statusSiang !== 'AKTIF'
+        ? 'PAGI'
+        : statusSiang === 'AKTIF' && statusPagi !== 'AKTIF'
+        ? 'SIANG'
+        : 'ALL';
+
     if (machine) {
       onSave({
         ...machine,
@@ -190,8 +224,10 @@ export const MachineModal: React.FC<MachineModalProps> = ({
         name: finalName,
         bay: finalBay,
         category,
-        status,
-        operationalShift,
+        status: derivedOverallStatus,
+        statusPagi,
+        statusSiang,
+        operationalShift: derivedOperationalShift,
         brandModel: brandModel.trim() || 'Fresenius 4008S',
         notes: notes.trim(),
       });
@@ -201,8 +237,10 @@ export const MachineModal: React.FC<MachineModalProps> = ({
         name: finalName,
         bay: finalBay,
         category,
-        status,
-        operationalShift,
+        status: derivedOverallStatus,
+        statusPagi,
+        statusSiang,
+        operationalShift: derivedOperationalShift,
         brandModel: brandModel.trim() || 'Fresenius 4008S',
         notes: notes.trim(),
       });
@@ -396,94 +434,236 @@ export const MachineModal: React.FC<MachineModalProps> = ({
             </div>
           </div>
 
-          {/* Status Operasional & Operasional Sif */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Status Kondisi Mesin
-              </label>
-              <div className="relative">
-                <select
-                  value={status}
-                  onChange={(e) => setStatus(e.target.value as MachineStatus)}
-                  className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-800 font-medium cursor-pointer"
-                >
-                  {Object.entries(MACHINE_STATUS_INFO).map(([key, val]) => (
-                    <option key={key} value={key}>
-                      {val.label}
-                    </option>
-                  ))}
-                </select>
-                <Activity className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+          {/* PENGATURAN STATUS TERPISAH PER SIF (PAGI vs SIANG) */}
+          <div className="bg-gradient-to-br from-slate-50 to-blue-50/30 p-3.5 rounded-2xl border-2 border-indigo-100 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-indigo-600 text-white flex items-center justify-center font-bold">
+                  <Clock className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-black text-slate-900 uppercase tracking-wider">
+                    Pengaturan Status Mesin Per Sif
+                  </h4>
+                  <p className="text-[11px] text-slate-500 font-medium">
+                    Atur ketersediaan & keaktifan mesin secara mandiri untuk Sif Pagi dan Sif Siang
+                  </p>
+                </div>
               </div>
             </div>
 
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Jadwal Ketersediaan Sif
-              </label>
-              <div className="relative">
-                <select
-                  value={operationalShift}
-                  onChange={(e) => setOperationalShift(e.target.value as MachineOperationalShift)}
-                  className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-800 font-medium cursor-pointer"
-                >
-                  <option value="ALL">☀️🌤️ Semua Sif (Pagi & Siang)</option>
-                  <option value="PAGI">☀️ Khusus Sif Pagi Saja</option>
-                  <option value="SIANG">🌤️ Khusus Sif Siang Saja</option>
-                </select>
-                <Clock className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+            {/* Side-by-Side: Status Sif Pagi vs Status Sif Siang */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Sif Pagi Status Card */}
+              <div
+                className={`p-3 rounded-xl border-2 transition-all ${
+                  statusPagi === 'AKTIF'
+                    ? 'bg-sky-50/80 border-sky-400 ring-2 ring-sky-500/10'
+                    : statusPagi === 'TIDAK_DIGUNAKAN'
+                    ? 'bg-slate-100/90 border-slate-300'
+                    : 'bg-amber-50/80 border-amber-300'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-1.5 font-extrabold text-xs text-sky-950">
+                    <Sun className="w-4 h-4 text-sky-600" />
+                    <span>Sif Pagi (06:30 - 14:00)</span>
+                  </div>
+                  <span
+                    className={`text-[10px] font-black px-2 py-0.5 rounded-md border ${
+                      statusPagi === 'AKTIF'
+                        ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                        : statusPagi === 'TIDAK_DIGUNAKAN'
+                        ? 'bg-slate-200 text-slate-700 border-slate-300'
+                        : 'bg-amber-100 text-amber-800 border-amber-300'
+                    }`}
+                  >
+                    {MACHINE_STATUS_INFO[statusPagi].label}
+                  </span>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-[11px] font-bold text-slate-700">
+                    Status Operasional Sif Pagi:
+                  </label>
+                  <select
+                    value={statusPagi}
+                    onChange={(e) => setStatusPagi(e.target.value as MachineStatus)}
+                    className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-500 cursor-pointer"
+                  >
+                    <option value="AKTIF">✅ Aktif Siap Pakai</option>
+                    <option value="TIDAK_DIGUNAKAN">⏸️ Tidak Digunakan (Off Pagi)</option>
+                    <option value="MAINTENANCE">🔧 Perbaikan Berkala (Maintenance)</option>
+                    <option value="RUSAK">❌ Rusak / Non-Operasional</option>
+                  </select>
+
+                  <button
+                    type="button"
+                    onClick={() => setStatusPagi(statusPagi === 'AKTIF' ? 'TIDAK_DIGUNAKAN' : 'AKTIF')}
+                    className={`w-full py-1 px-2 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
+                      statusPagi === 'AKTIF'
+                        ? 'bg-white hover:bg-slate-100 text-slate-700 border-slate-300'
+                        : 'bg-sky-600 hover:bg-sky-700 text-white border-sky-600 shadow-2xs'
+                    }`}
+                  >
+                    {statusPagi === 'AKTIF' ? 'Set: Tidak Digunakan di Pagi' : 'Set: Aktifkan di Pagi'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Sif Siang Status Card */}
+              <div
+                className={`p-3 rounded-xl border-2 transition-all ${
+                  statusSiang === 'AKTIF'
+                    ? 'bg-amber-50/80 border-amber-400 ring-2 ring-amber-500/10'
+                    : statusSiang === 'TIDAK_DIGUNAKAN'
+                    ? 'bg-slate-100/90 border-slate-300'
+                    : 'bg-rose-50/80 border-rose-300'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-1.5 font-extrabold text-xs text-amber-950">
+                    <Sunset className="w-4 h-4 text-amber-600" />
+                    <span>Sif Siang (13:30 - 21:00)</span>
+                  </div>
+                  <span
+                    className={`text-[10px] font-black px-2 py-0.5 rounded-md border ${
+                      statusSiang === 'AKTIF'
+                        ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                        : statusSiang === 'TIDAK_DIGUNAKAN'
+                        ? 'bg-slate-200 text-slate-700 border-slate-300'
+                        : 'bg-amber-100 text-amber-800 border-amber-300'
+                    }`}
+                  >
+                    {MACHINE_STATUS_INFO[statusSiang].label}
+                  </span>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-[11px] font-bold text-slate-700">
+                    Status Operasional Sif Siang:
+                  </label>
+                  <select
+                    value={statusSiang}
+                    onChange={(e) => setStatusSiang(e.target.value as MachineStatus)}
+                    className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500 cursor-pointer"
+                  >
+                    <option value="AKTIF">✅ Aktif Siap Pakai</option>
+                    <option value="TIDAK_DIGUNAKAN">⏸️ Tidak Digunakan (Off Siang)</option>
+                    <option value="MAINTENANCE">🔧 Perbaikan Berkala (Maintenance)</option>
+                    <option value="RUSAK">❌ Rusak / Non-Operasional</option>
+                  </select>
+
+                  <button
+                    type="button"
+                    onClick={() => setStatusSiang(statusSiang === 'AKTIF' ? 'TIDAK_DIGUNAKAN' : 'AKTIF')}
+                    className={`w-full py-1 px-2 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
+                      statusSiang === 'AKTIF'
+                        ? 'bg-white hover:bg-slate-100 text-slate-700 border-slate-300'
+                        : 'bg-amber-600 hover:bg-amber-700 text-white border-amber-600 shadow-2xs'
+                    }`}
+                  >
+                    {statusSiang === 'AKTIF' ? 'Set: Tidak Digunakan di Siang' : 'Set: Aktifkan di Siang'}
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
 
-          {/* Sif Quick Selector Pills */}
-          <div>
-            <label className="block text-xs font-bold text-slate-700 mb-1.5">
-              Pilihan Cepat Sif Mesin
-            </label>
-            <div className="grid grid-cols-3 gap-2">
-              <button
-                type="button"
-                onClick={() => setOperationalShift('ALL')}
-                className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all flex flex-col items-center gap-1 cursor-pointer ${
-                  operationalShift === 'ALL'
-                    ? 'bg-blue-50 border-blue-500 text-blue-800 ring-2 ring-blue-500/20'
-                    : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <Clock className="w-4 h-4 text-blue-600" />
-                <span>Semua Sif</span>
-                <span className="text-[10px] font-normal text-slate-500">Pagi & Siang</span>
-              </button>
+            {/* Quick Preset Buttons */}
+            <div>
+              <label className="block text-[11px] font-bold text-slate-600 mb-1.5">
+                Pilihan Cepat Skenario Mesin:
+              </label>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStatusPagi('AKTIF');
+                    setStatusSiang('AKTIF');
+                  }}
+                  className={`px-2.5 py-2 rounded-xl text-left border font-bold text-[11px] transition-all cursor-pointer ${
+                    statusPagi === 'AKTIF' && statusSiang === 'AKTIF'
+                      ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                      : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-1">
+                    <span>☀️🌤️</span>
+                    <span>Kedua Sif</span>
+                  </div>
+                  <div className={`text-[10px] font-normal ${statusPagi === 'AKTIF' && statusSiang === 'AKTIF' ? 'text-blue-100' : 'text-slate-500'}`}>
+                    Aktif Pagi & Siang
+                  </div>
+                </button>
 
-              <button
-                type="button"
-                onClick={() => setOperationalShift('PAGI')}
-                className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all flex flex-col items-center gap-1 cursor-pointer ${
-                  operationalShift === 'PAGI'
-                    ? 'bg-sky-50 border-sky-500 text-sky-800 ring-2 ring-sky-500/20'
-                    : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <Sun className="w-4 h-4 text-sky-600" />
-                <span>Khusus Pagi</span>
-                <span className="text-[10px] font-normal text-slate-500">06:30 - 14:00</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStatusPagi('AKTIF');
+                    setStatusSiang('TIDAK_DIGUNAKAN');
+                  }}
+                  className={`px-2.5 py-2 rounded-xl text-left border font-bold text-[11px] transition-all cursor-pointer ${
+                    statusPagi === 'AKTIF' && statusSiang !== 'AKTIF'
+                      ? 'bg-sky-600 text-white border-sky-600 shadow-xs'
+                      : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-1">
+                    <span>☀️</span>
+                    <span>Hanya Pagi</span>
+                  </div>
+                  <div className={`text-[10px] font-normal ${statusPagi === 'AKTIF' && statusSiang !== 'AKTIF' ? 'text-sky-100' : 'text-slate-500'}`}>
+                    Siang Off
+                  </div>
+                </button>
 
-              <button
-                type="button"
-                onClick={() => setOperationalShift('SIANG')}
-                className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all flex flex-col items-center gap-1 cursor-pointer ${
-                  operationalShift === 'SIANG'
-                    ? 'bg-amber-50 border-amber-500 text-amber-800 ring-2 ring-amber-500/20'
-                    : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <Sunset className="w-4 h-4 text-amber-600" />
-                <span>Khusus Siang</span>
-                <span className="text-[10px] font-normal text-slate-500">13:30 - 21:00</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStatusPagi('TIDAK_DIGUNAKAN');
+                    setStatusSiang('AKTIF');
+                  }}
+                  className={`px-2.5 py-2 rounded-xl text-left border font-bold text-[11px] transition-all cursor-pointer ${
+                    statusPagi !== 'AKTIF' && statusSiang === 'AKTIF'
+                      ? 'bg-amber-600 text-white border-amber-600 shadow-xs'
+                      : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-1">
+                    <span>🌤️</span>
+                    <span>Hanya Siang</span>
+                  </div>
+                  <div className={`text-[10px] font-normal ${statusPagi !== 'AKTIF' && statusSiang === 'AKTIF' ? 'text-amber-100' : 'text-slate-500'}`}>
+                    Pagi Off
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStatusPagi('TIDAK_DIGUNAKAN');
+                    setStatusSiang('TIDAK_DIGUNAKAN');
+                  }}
+                  className={`px-2.5 py-2 rounded-xl text-left border font-bold text-[11px] transition-all cursor-pointer ${
+                    statusPagi === 'TIDAK_DIGUNAKAN' && statusSiang === 'TIDAK_DIGUNAKAN'
+                      ? 'bg-slate-700 text-white border-slate-700 shadow-xs'
+                      : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-1">
+                    <span>⏸️</span>
+                    <span>Non-Aktif</span>
+                  </div>
+                  <div className={`text-[10px] font-normal ${statusPagi === 'TIDAK_DIGUNAKAN' && statusSiang === 'TIDAK_DIGUNAKAN' ? 'text-slate-200' : 'text-slate-500'}`}>
+                    Off Kedua Sif
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            {/* Case Explanation Note */}
+            <div className="p-2.5 bg-blue-50/70 border border-blue-200 rounded-xl text-[11px] text-blue-900 leading-relaxed font-medium">
+              💡 <strong>Contoh Kasus:</strong> Mesin dapat diatur <em>Tidak Digunakan</em> pada sif pagi dan <em>Aktif</em> pada sif siang (atau sebaliknya). Mesin yang tidak digunakan pada suatu sif tidak akan dialokasikan oleh sistem penjadwalan otomatis untuk sif tersebut.
             </div>
           </div>
 

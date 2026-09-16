@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useHemo } from '../context/HemoContext';
 import { ShiftAssignment, ShiftType, SHIFT_TYPE_INFO, NURSE_ROLE_INFO, Nurse } from '../types';
 import { GoogleSheetsService } from '../domain/GoogleSheetsService';
@@ -24,6 +24,7 @@ import {
   Edit2,
   Tag,
   Stethoscope,
+  Clock,
 } from 'lucide-react';
 import { MonthlyDoctorScheduleView } from '../components/MonthlyDoctorScheduleView';
 
@@ -51,10 +52,15 @@ export const MonthlyScheduleScreen: React.FC = () => {
   const [isSpecialDutyModalOpen, setIsSpecialDutyModalOpen] = useState(false);
   const [selectedDutyNurseId, setSelectedDutyNurseId] = useState<number | undefined>(undefined);
   const [editingAssignment, setEditingAssignment] = useState<ShiftAssignment | null>(null);
-  
-  // Mobile Optimization: 7-day Weekly view vs 1-Month Full Matrix
-  const [viewScope, setViewScope] = useState<'MONTH' | 'WEEK'>('WEEK');
-  const [selectedWeekIndex, setSelectedWeekIndex] = useState<number>(0);
+
+  // Table container ref for smooth horizontal scrolling
+  const matrixContainerRef = useRef<HTMLDivElement>(null);
+
+  // Real-time current date calculation
+  const realTimeTodayStr = useMemo(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }, []);
 
   // Month parsed
   const [yearStr, monthStr] = currentMonth.split('-');
@@ -99,26 +105,43 @@ export const MonthlyScheduleScreen: React.FC = () => {
       const d = new Date(year, month - 1, day);
       const dayOfWeek = d.getDay(); // 0 is Sun, 6 is Sat
       const dayNames = ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'];
+      const isToday = dateStr === realTimeTodayStr;
       days.push({
         dayNumber: day,
         dateString: dateStr,
         dayName: dayNames[dayOfWeek],
         isWeekend: dayOfWeek === 0 || dayOfWeek === 6,
         isSunday: dayOfWeek === 0,
+        isToday,
       });
     }
     return days;
-  }, [year, month, totalDaysInMonth]);
+  }, [year, month, totalDaysInMonth, realTimeTodayStr]);
 
-  const totalWeeks = Math.ceil(totalDaysInMonth / 7);
+  // Full Month Matrix: visibleDays is always the full month
+  const visibleDays = daysArray;
 
-  const visibleDays = useMemo(() => {
-    if (viewScope === 'WEEK') {
-      const startIdx = selectedWeekIndex * 7;
-      return daysArray.slice(startIdx, Math.min(startIdx + 7, daysArray.length));
+  // Auto scroll to today on load if today is in this month
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      if (matrixContainerRef.current) {
+        const todayEl = matrixContainerRef.current.querySelector('[data-active-today="true"]');
+        if (todayEl) {
+          todayEl.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+        }
+      }
+    }, 300);
+    return () => clearTimeout(timeout);
+  }, [currentMonth]);
+
+  const scrollToActiveToday = () => {
+    if (matrixContainerRef.current) {
+      const todayEl = matrixContainerRef.current.querySelector('[data-active-today="true"]');
+      if (todayEl) {
+        todayEl.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+      }
     }
-    return daysArray;
-  }, [viewScope, selectedWeekIndex, daysArray]);
+  };
 
   // Active Nurses filtered
   const filteredNurses = useMemo(() => {
@@ -359,6 +382,7 @@ export const MonthlyScheduleScreen: React.FC = () => {
                   onClick={() => generateMonthlySchedule(currentMonth)}
                   disabled={isGenerating}
                   className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-sky-600 to-blue-600 hover:from-sky-700 hover:to-blue-700 text-white text-xs font-extrabold shadow-soft-sm transition-all active:scale-95 disabled:opacity-50"
+                  title="Generate otomatis jadwal 1 bulan adil: Senin-Sabtu (6 hari kerja) pembagian sif berimbang 50:50 (misal 13P:13S atau 15P:15S per staf), libur HANYA hari Minggu, Kepala Ruang setiap hari kerja sif pagi"
                 >
                   <Sparkles className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
                   <span>{isGenerating ? 'Menyusun...' : 'Auto-Jadwal 1 Bulan'}</span>
@@ -435,125 +459,120 @@ export const MonthlyScheduleScreen: React.FC = () => {
         <>
           {/* Full Monthly Schedule Matrix Table */}
       <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-soft border border-slate-200/80 dark:border-slate-800/80 overflow-hidden transition-all">
-        {/* View Scope Controls (Weekly 7-Day vs Full Month) */}
-        <div className="px-4 py-3 bg-slate-50/80 dark:bg-slate-850/80 border-b border-slate-200/80 dark:border-slate-800/80 flex flex-wrap items-center justify-between gap-2.5">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-bold text-slate-500 dark:text-slate-400">Tampilan Matriks:</span>
-            <div className="inline-flex rounded-2xl p-1 bg-slate-200/80 dark:bg-slate-800 text-xs font-semibold">
-              <button
-                type="button"
-                onClick={() => setViewScope('WEEK')}
-                className={`px-3 py-1 rounded-xl transition-all ${
-                  viewScope === 'WEEK'
-                    ? 'bg-white dark:bg-slate-900 text-sky-600 dark:text-sky-400 shadow-2xs font-extrabold'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                📱 7 Hari (Pekan)
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewScope('MONTH')}
-                className={`px-3 py-1 rounded-xl transition-all ${
-                  viewScope === 'MONTH'
-                    ? 'bg-white dark:bg-slate-900 text-sky-600 dark:text-sky-400 shadow-2xs font-extrabold'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                1 Bulan Penuh
-              </button>
+        {/* Full Month Scope Controls with Real-Time Active Day Indicator */}
+        <div className="px-4 py-3 bg-slate-50/90 dark:bg-slate-850/90 border-b border-slate-200/80 dark:border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 text-xs font-extrabold shadow-2xs">
+              <Calendar className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
+              <span>Tampilan 1 Bulan Penuh</span>
+              <span className="text-[11px] px-1.5 py-0.5 rounded-md bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300 font-black">
+                {totalDaysInMonth} Hari
+              </span>
             </div>
+
+            {/* Real-time active day status badge */}
+            {daysArray.some((d) => d.isToday) && (
+              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-300/80 dark:border-amber-700/80 text-amber-900 dark:text-amber-200 text-xs font-bold">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-500 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-600"></span>
+                </span>
+                <span>
+                  Hari Aktif (Real Time): <b>{daysArray.find((d) => d.isToday)?.dayName}, {new Date().getDate()} {['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'][month - 1]} {year}</b>
+                </span>
+              </div>
+            )}
           </div>
 
-          {viewScope === 'WEEK' && (
-            <div className="flex items-center gap-1.5 overflow-x-auto mobile-smooth-scroll py-0.5 max-w-full">
-              {Array.from({ length: totalWeeks }).map((_, wIdx) => {
-                const startDay = wIdx * 7 + 1;
-                const endDay = Math.min((wIdx + 1) * 7, totalDaysInMonth);
-                const isCurrentWeek = selectedWeekIndex === wIdx;
-                return (
-                  <button
-                    key={wIdx}
-                    type="button"
-                    onClick={() => setSelectedWeekIndex(wIdx)}
-                    className={`px-3 py-1 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
-                      isCurrentWeek
-                        ? 'bg-sky-600 text-white font-extrabold shadow-soft-sm'
-                        : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-750'
-                    }`}
-                  >
-                    Minggu {wIdx + 1} ({startDay}-{endDay})
-                  </button>
-                );
-              })}
-            </div>
-          )}
+          <div className="flex items-center gap-2">
+            {daysArray.some((d) => d.isToday) && (
+              <button
+                type="button"
+                onClick={scrollToActiveToday}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold shadow-soft-sm transition-all active:scale-95"
+                title="Gulir langsung ke kolom hari ini (Real Time)"
+              >
+                <Clock className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
+                <span>Fokus Hari Aktif</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Helper guide */}
-        <div className="px-4 py-2 bg-slate-50/50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+        <div className="px-4 py-2 bg-slate-50/50 dark:bg-slate-850/50 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
           <div className="flex items-center gap-3">
             {isAdmin ? (
               <span className="flex items-center gap-1.5 flex-wrap">
                 <span>
                   💡 <b>Tip:</b> Cukup <b>1 kali klik</b> pada jadwal sif untuk berganti otomatis (
-                  <span className="text-sky-700 font-bold">P</span> &rarr;{' '}
-                  <span className="text-amber-700 font-bold">S</span> &rarr;{' '}
-                  <span className="text-slate-600 font-bold">L</span> &rarr;{' '}
-                  <span className="text-teal-700 font-bold">C</span> &rarr;{' '}
-                  <span className="text-rose-700 font-bold">SKT</span>). Gunakan tombol <b>Input Tugas Khusus</b> untuk penginputan PIC ruangan & PJ Sif.
+                  <span className="text-sky-700 dark:text-sky-400 font-bold">P</span> &rarr;{' '}
+                  <span className="text-amber-700 dark:text-amber-400 font-bold">S</span> &rarr;{' '}
+                  <span className="text-slate-600 dark:text-slate-300 font-bold">L</span> &rarr;{' '}
+                  <span className="text-teal-700 dark:text-teal-400 font-bold">C</span> &rarr;{' '}
+                  <span className="text-rose-700 dark:text-rose-400 font-bold">SKT</span>). Kolom dengan bingkai biru terang dan badge <b>KINI</b> adalah hari aktif (Real Time).
                 </span>
               </span>
             ) : (
-              <span className="text-slate-600 font-medium flex items-center gap-1.5">
-                <span>👁️</span> Mode Hanya Lihat: Anda sedang melihat jadwal dinas resmi HD (Hanya Kepala Ruangan yang berwenang merubah data).
+              <span className="text-slate-600 dark:text-slate-400 font-medium flex items-center gap-1.5">
+                <span>👁️</span> Mode Hanya Lihat: Anda sedang melihat jadwal dinas resmi HD 1 bulan penuh.
               </span>
             )}
           </div>
           <span className="hidden sm:inline text-slate-400">
-            {viewScope === 'WEEK' ? 'Menampilkan 7 hari per pekan' : 'Geser horizontal untuk melihat seluruh tanggal'}
+            Geser horizontal untuk meninjau seluruh {totalDaysInMonth} hari
           </span>
         </div>
 
-        <div className="overflow-x-auto max-w-full mobile-smooth-scroll">
+        <div ref={matrixContainerRef} className="overflow-x-auto max-w-full mobile-smooth-scroll">
           <table className="w-full text-left border-collapse text-xs">
             <thead>
-              <tr className="bg-slate-100/80 border-b border-slate-200 sticky top-0 z-10">
-                <th className="py-2.5 px-3 font-semibold text-slate-700 min-w-[180px] sticky left-0 bg-slate-100 z-20 border-r border-slate-200">
+              <tr className="bg-slate-100/90 dark:bg-slate-800/90 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-10">
+                <th className="py-2.5 px-3 font-semibold text-slate-700 dark:text-slate-200 min-w-[180px] sticky left-0 bg-slate-100 dark:bg-slate-800 z-20 border-r border-slate-200 dark:border-slate-700 shadow-2xs">
                   Perawat ({filteredNurses.length})
                 </th>
                 {visibleDays.map((day) => (
                   <th
                     key={day.dayNumber}
+                    data-active-today={day.isToday ? 'true' : 'false'}
                     onClick={() => selectDate(day.dateString)}
-                    className={`py-2 px-1.5 text-center cursor-pointer min-w-[36px] max-w-[40px] font-semibold transition-colors hover:bg-blue-100/50 ${
-                      day.isSunday
-                        ? 'bg-rose-50/80 text-rose-700 font-bold'
+                    className={`py-2 px-1 text-center cursor-pointer min-w-[38px] max-w-[44px] font-semibold transition-all relative ${
+                      day.isToday
+                        ? 'bg-gradient-to-b from-sky-600 to-blue-700 text-white font-extrabold shadow-md border-x-2 border-sky-400 z-20 ring-2 ring-sky-400/80 ring-inset'
+                        : day.isSunday
+                        ? 'bg-rose-50/80 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 font-bold border-r border-slate-200 dark:border-slate-800'
                         : day.isWeekend
-                        ? 'bg-amber-50/50 text-amber-800'
-                        : 'text-slate-700'
+                        ? 'bg-amber-50/50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 border-r border-slate-200 dark:border-slate-800'
+                        : 'text-slate-700 dark:text-slate-300 border-r border-slate-200 dark:border-slate-800 hover:bg-sky-100/50 dark:hover:bg-slate-750'
                     }`}
-                    title={`Klik untuk buka tanggal ${day.dateString}`}
+                    title={`Klik untuk buka tanggal ${day.dateString}${day.isToday ? ' (Hari Aktif Real Time)' : ''}`}
                   >
-                    <div className="text-[10px] uppercase font-normal">{day.dayName}</div>
-                    <div className="text-xs">{day.dayNumber}</div>
+                    {day.isToday && (
+                      <div className="flex items-center justify-center mb-0.5">
+                        <span className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[8px] font-black uppercase tracking-wider animate-pulse shadow-xs">
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-600" /> KINI
+                        </span>
+                      </div>
+                    )}
+                    <div className={`text-[10px] uppercase ${day.isToday ? 'font-black text-amber-200' : 'font-normal'}`}>{day.dayName}</div>
+                    <div className={`text-xs ${day.isToday ? 'font-black text-white text-sm scale-110 drop-shadow' : ''}`}>{day.dayNumber}</div>
                   </th>
                 ))}
-                <th className="py-2.5 px-2 font-semibold text-slate-700 text-center min-w-[45px] bg-slate-100 border-l border-slate-200">
+                <th className="py-2.5 px-2 font-semibold text-slate-700 dark:text-slate-200 text-center min-w-[45px] bg-slate-100 dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700">
                   P
                 </th>
-                <th className="py-2.5 px-2 font-semibold text-slate-700 text-center min-w-[45px] bg-slate-100">
+                <th className="py-2.5 px-2 font-semibold text-slate-700 dark:text-slate-200 text-center min-w-[45px] bg-slate-100 dark:bg-slate-800">
                   S
                 </th>
-                <th className="py-2.5 px-2 font-semibold text-slate-700 text-center min-w-[45px] bg-slate-100">
+                <th className="py-2.5 px-2 font-semibold text-slate-700 dark:text-slate-200 text-center min-w-[45px] bg-slate-100 dark:bg-slate-800">
                   L
                 </th>
-                <th className="py-2.5 px-2 font-semibold text-slate-700 text-center min-w-[50px] bg-slate-100">
+                <th className="py-2.5 px-2 font-semibold text-slate-700 dark:text-slate-200 text-center min-w-[50px] bg-slate-100 dark:bg-slate-800">
                   Total
                 </th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {filteredNurses.map((nurse, index) => {
                 let nurseP = 0;
                 let nurseS = 0;
@@ -647,15 +666,25 @@ export const MonthlyScheduleScreen: React.FC = () => {
                             e.preventDefault();
                             handleOpenEditModal(day.dateString, nurse);
                           }}
-                          className={`py-1.5 px-0.5 text-center border-r border-slate-100/60 select-none transition-all relative group ${
-                            isAdmin ? 'cursor-pointer hover:bg-sky-100/60 active:scale-95' : 'cursor-default'
-                          } ${day.isSunday ? 'bg-rose-50/20' : ''}`}
-                          title={`${nurse.name} | ${day.dateString}: ${shiftInfo?.label}${activeDuty ? ` | Tugas: ${activeDuty}` : ''}${hasMachines ? ` | Mesin: ${fullAsg?.assignedMachineIds.join(', ')}` : ''}${
+                          className={`py-1.5 px-0.5 text-center select-none transition-all relative group ${
+                            isAdmin ? 'cursor-pointer hover:bg-sky-100/60 dark:hover:bg-sky-900/40 active:scale-95' : 'cursor-default'
+                          } ${
+                            day.isToday
+                              ? 'border-x-2 border-sky-400 dark:border-sky-500 bg-sky-50/70 dark:bg-sky-950/40 shadow-inner'
+                              : day.isSunday
+                              ? 'bg-rose-50/20 dark:bg-rose-950/20 border-r border-slate-100/60 dark:border-slate-800/60'
+                              : 'border-r border-slate-100/60 dark:border-slate-800/60'
+                          }`}
+                          title={`${nurse.name} | ${day.dateString}${day.isToday ? ' [HARI AKTIF REAL TIME]' : ''}: ${shiftInfo?.label}${activeDuty ? ` | Tugas: ${activeDuty}` : ''}${hasMachines ? ` | Mesin: ${fullAsg?.assignedMachineIds.join(', ')}` : ''}${
                             isAdmin ? ' (Klik: P -> S -> L -> C -> SKT)' : ' (Mode Hanya Lihat)'
                           }`}
                         >
                           <div
-                            className={`w-7 h-7 mx-auto relative flex items-center justify-center rounded-lg text-xs transition-transform active:scale-90 ${cellBg} ${cellText}`}
+                            className={`w-7 h-7 mx-auto relative flex items-center justify-center rounded-lg text-xs transition-transform active:scale-90 ${cellBg} ${cellText} ${
+                              day.isToday
+                                ? 'ring-2 ring-sky-500 dark:ring-sky-300 ring-offset-1 dark:ring-offset-slate-900 font-black shadow-xs'
+                                : ''
+                            }`}
                           >
                             {shiftInfo?.code}
 
@@ -672,16 +701,16 @@ export const MonthlyScheduleScreen: React.FC = () => {
                     })}
 
                     {/* Nurse Row Totals */}
-                    <td className="py-2 px-1 text-center font-bold text-sky-700 bg-slate-50/80 border-l border-slate-200">
+                    <td className="py-2 px-1 text-center font-bold text-sky-700 dark:text-sky-400 bg-slate-50/80 dark:bg-slate-800/60 border-l border-slate-200 dark:border-slate-700">
                       {nurseP}
                     </td>
-                    <td className="py-2 px-1 text-center font-bold text-amber-700 bg-slate-50/80">
+                    <td className="py-2 px-1 text-center font-bold text-amber-700 dark:text-amber-400 bg-slate-50/80 dark:bg-slate-800/60">
                       {nurseS}
                     </td>
-                    <td className="py-2 px-1 text-center font-medium text-slate-500 bg-slate-50/80">
+                    <td className="py-2 px-1 text-center font-medium text-slate-500 dark:text-slate-400 bg-slate-50/80 dark:bg-slate-800/60">
                       {nurseL}
                     </td>
-                    <td className="py-2 px-1 text-center font-bold text-slate-900 bg-slate-100">
+                    <td className="py-2 px-1 text-center font-bold text-slate-900 dark:text-white bg-slate-100 dark:bg-slate-800">
                       {nurseP + nurseS}
                     </td>
                   </tr>
@@ -691,11 +720,11 @@ export const MonthlyScheduleScreen: React.FC = () => {
 
             {/* Bottom Summary Row for Daily Total Staff on Duty */}
             <tfoot>
-              <tr className="bg-slate-100 font-semibold text-slate-700 border-t-2 border-slate-300">
-                <td className="py-2 px-3 sticky left-0 bg-slate-100 z-10 border-r border-slate-200 text-slate-800">
+              <tr className="bg-slate-100/90 dark:bg-slate-800/90 font-semibold text-slate-700 dark:text-slate-200 border-t-2 border-slate-300 dark:border-slate-700">
+                <td className="py-2 px-3 sticky left-0 bg-slate-100 dark:bg-slate-800 z-10 border-r border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 shadow-2xs font-bold">
                   Total Dinas (P+S)
                 </td>
-                {daysArray.map((day) => {
+                {visibleDays.map((day) => {
                   let dailyWorkCount = 0;
                   nurses.forEach((nurse) => {
                     const shift = assignmentMap.get(`${day.dateString}_${nurse.id}`);
@@ -707,18 +736,20 @@ export const MonthlyScheduleScreen: React.FC = () => {
                   return (
                     <td
                       key={day.dayNumber}
-                      className={`py-2 px-0.5 text-center text-xs ${
-                        isUnderstaffed
-                          ? 'bg-rose-100 text-rose-800 font-bold'
-                          : 'text-slate-800 font-bold'
+                      className={`py-2 px-0.5 text-center text-xs transition-colors ${
+                        day.isToday
+                          ? 'border-x-2 border-b-2 border-sky-500 dark:border-sky-400 bg-sky-100 dark:bg-sky-900/70 text-sky-950 dark:text-sky-100 font-black'
+                          : isUnderstaffed
+                          ? 'bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300 font-bold border-r border-slate-200 dark:border-slate-700'
+                          : 'text-slate-800 dark:text-slate-200 font-bold border-r border-slate-200 dark:border-slate-700'
                       }`}
-                      title={`Total ${dailyWorkCount} perawat berdinas`}
+                      title={`Total ${dailyWorkCount} perawat berdinas${day.isToday ? ' (Hari Aktif Real Time)' : ''}`}
                     >
                       {dailyWorkCount}
                     </td>
                   );
                 })}
-                <td colSpan={4} className="bg-slate-100 border-l border-slate-200" />
+                <td colSpan={4} className="bg-slate-100 dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700" />
               </tr>
             </tfoot>
           </table>
@@ -759,9 +790,13 @@ export const MonthlyScheduleScreen: React.FC = () => {
             </span>
             Sakit / Izin
           </span>
-          <span className="inline-flex items-center gap-1.5 pl-2 border-l border-slate-200 text-teal-800">
+          <span className="inline-flex items-center gap-1.5 pl-2 border-l border-slate-200 text-teal-800 dark:text-teal-300">
             <span className="w-2.5 h-2.5 rounded-full bg-teal-400 ring-1 ring-teal-500" />
             <span>Dot = Ada Tugas Khusus / PIC</span>
+          </span>
+          <span className="inline-flex items-center gap-1.5 pl-2 border-l border-slate-200 dark:border-slate-700 text-sky-800 dark:text-sky-300 font-bold">
+            <span className="w-2.5 h-2.5 rounded-full bg-sky-500 ring-2 ring-sky-300 animate-pulse" />
+            <span>Kolom Lineout Biru & KINI = Hari Aktif (Real Time)</span>
           </span>
         </div>
         <div className="text-slate-500">

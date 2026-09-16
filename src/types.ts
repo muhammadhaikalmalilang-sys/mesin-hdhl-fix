@@ -201,11 +201,34 @@ export interface Machine {
   name: string; // "Mesin HD A01"
   bay: string; // "Bay A (Reguler)", etc.
   category: MachineCategory;
-  status: MachineStatus;
+  status: MachineStatus; // Global default fallback status
   brandModel: string;
   notes?: string;
   operationalShift?: MachineOperationalShift;
+  statusPagi?: MachineStatus; // Status khusus Sif Pagi
+  statusSiang?: MachineStatus; // Status khusus Sif Siang
 }
+
+/**
+ * Returns the effective status for a machine on a given shift ('PAGI' | 'SIANG').
+ * Prioritizes shift-specific status (statusPagi / statusSiang).
+ * Falls back to TIDAK_DIGUNAKAN if operationalShift is strictly configured for the opposite shift.
+ * Otherwise defaults to machine.status or 'AKTIF'.
+ */
+export const getMachineStatusForShift = (
+  machine: Machine,
+  shift: 'PAGI' | 'SIANG'
+): MachineStatus => {
+  if (shift === 'PAGI') {
+    if (machine.statusPagi) return machine.statusPagi;
+    if (machine.operationalShift === 'SIANG') return 'TIDAK_DIGUNAKAN';
+    return machine.status || 'AKTIF';
+  } else {
+    if (machine.statusSiang) return machine.statusSiang;
+    if (machine.operationalShift === 'PAGI') return 'TIDAK_DIGUNAKAN';
+    return machine.status || 'AKTIF';
+  }
+};
 
 export type ShiftType = 'PAGI' | 'SIANG' | 'LIBUR' | 'CUTI' | 'SAKIT';
 

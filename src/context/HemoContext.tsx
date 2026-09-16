@@ -125,8 +125,9 @@ export interface HemoContextType {
   ) => void;
   deleteMachine: (id: number) => void;
   loadDefaultMachines: () => void;
-  toggleMachineStatus: (id: number) => void;
-  setMachineStatus: (id: number, newStatus: MachineStatus, reason?: string) => void;
+  toggleMachineStatus: (id: number, shift?: 'PAGI' | 'SIANG') => void;
+  setMachineStatus: (id: number, newStatus: MachineStatus, reason?: string, shift?: 'PAGI' | 'SIANG' | 'BOTH') => void;
+  updateMachineShiftStatus: (id: number, shift: 'PAGI' | 'SIANG' | 'BOTH', status: MachineStatus) => void;
   setAllMachinesActive: () => void;
   updateSettings: (newSettings: AppSettings) => void;
   markAssignmentWhatsAppSent: (assignmentId: string, phone?: string) => void;
@@ -437,6 +438,8 @@ export const HemoProvider: React.FC<{ children: React.ReactNode }> = ({ children
       brandModel: machine.brandModel || '',
       notes: machine.notes ?? '',
       operationalShift: machine.operationalShift || 'ALL',
+      statusPagi: machine.statusPagi || machine.status || 'AKTIF',
+      statusSiang: machine.statusSiang || machine.status || 'AKTIF',
     };
   };
 
@@ -705,6 +708,8 @@ export const HemoProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     ...cloudM,
                     notes: cloudM.notes ?? '',
                     operationalShift: cloudM.operationalShift || m.operationalShift || 'ALL',
+                    statusPagi: cloudM.statusPagi || m.statusPagi || cloudM.status || m.status || 'AKTIF',
+                    statusSiang: cloudM.statusSiang || m.statusSiang || cloudM.status || m.status || 'AKTIF',
                   };
                 }
                 return m;
@@ -717,6 +722,8 @@ export const HemoProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     ...cm,
                     notes: cm.notes ?? '',
                     operationalShift: cm.operationalShift || 'ALL',
+                    statusPagi: cm.statusPagi || cm.status || 'AKTIF',
+                    statusSiang: cm.statusSiang || cm.status || 'AKTIF',
                   });
                 }
               });
@@ -1269,13 +1276,13 @@ export const HemoProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const dayNumber = parseInt(date.split('-')[2] || '1', 10);
           const pagiAlloc = FairSchedulerEngine.allocateMachinesFairly(
             pagiNurses,
-            activeMachines,
+            machines,
             dayNumber,
             'PAGI'
           );
           const siangAlloc = FairSchedulerEngine.allocateMachinesFairly(
             siangNurses,
-            activeMachines,
+            machines,
             dayNumber,
             'SIANG'
           );
@@ -1394,7 +1401,7 @@ export const HemoProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const pagiAlloc = shouldAllocPagi
           ? FairSchedulerEngine.allocateMachinesWithOptions(
               pagiNurses,
-              activeMachines,
+              machines,
               dayNumber,
               'PAGI',
               fourMachineTracker,
@@ -1409,7 +1416,7 @@ export const HemoProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const siangAlloc = shouldAllocSiang
           ? FairSchedulerEngine.allocateMachinesWithOptions(
               siangNurses,
-              activeMachines,
+              machines,
               dayNumber,
               'SIANG',
               fourMachineTracker,
@@ -2123,6 +2130,8 @@ export const HemoProvider: React.FC<{ children: React.ReactNode }> = ({ children
       category: machineData.category || 'REGULER',
       status: machineData.status || 'AKTIF',
       operationalShift: machineData.operationalShift || 'ALL',
+      statusPagi: machineData.statusPagi || machineData.status || 'AKTIF',
+      statusSiang: machineData.statusSiang || machineData.status || 'AKTIF',
       brandModel: machineData.brandModel?.trim() || 'Fresenius 4008S',
       notes: machineData.notes?.trim() ?? '',
     };
@@ -2163,6 +2172,8 @@ export const HemoProvider: React.FC<{ children: React.ReactNode }> = ({ children
       category: machine.category || 'REGULER',
       status: machine.status || 'AKTIF',
       operationalShift: machine.operationalShift || 'ALL',
+      statusPagi: machine.statusPagi || machine.status || 'AKTIF',
+      statusSiang: machine.statusSiang || machine.status || 'AKTIF',
       brandModel: machine.brandModel?.trim() || 'Fresenius 4008S',
       notes: machine.notes?.trim() ?? '',
     };
@@ -2227,44 +2238,109 @@ export const HemoProvider: React.FC<{ children: React.ReactNode }> = ({ children
     showToast('Seluruh 30 mesin HD (A01-A12, C01-C04, B01-B09, C05-C09) berhasil dimuat lengkap dan disinkronkan.', 'success');
   };
 
-  const toggleMachineStatus = (id: number) => {
+  const toggleMachineStatus = (id: number, shift?: 'PAGI' | 'SIANG') => {
     if (!checkKaruPermission('mengubah status mesin HD')) return;
     const target = machines.find((m) => m.id === id);
     if (!target) return;
-    const newStatus: MachineStatus = target.status === 'AKTIF' ? 'TIDAK_DIGUNAKAN' : 'AKTIF';
-    const updated = { ...target, status: newStatus };
+
+    let updated: Machine;
+    let label = '';
+
+    if (shift === 'PAGI') {
+      const current = target.statusPagi || target.status || 'AKTIF';
+      const next: MachineStatus = current === 'AKTIF' ? 'TIDAK_DIGUNAKAN' : 'AKTIF';
+      updated = { ...target, statusPagi: next };
+      label = `Sif Pagi: ${next === 'AKTIF' ? 'Aktif Normal' : 'Tidak Digunakan'}`;
+    } else if (shift === 'SIANG') {
+      const current = target.statusSiang || target.status || 'AKTIF';
+      const next: MachineStatus = current === 'AKTIF' ? 'TIDAK_DIGUNAKAN' : 'AKTIF';
+      updated = { ...target, statusSiang: next };
+      label = `Sif Siang: ${next === 'AKTIF' ? 'Aktif Normal' : 'Tidak Digunakan'}`;
+    } else {
+      const newStatus: MachineStatus = target.status === 'AKTIF' ? 'TIDAK_DIGUNAKAN' : 'AKTIF';
+      updated = {
+        ...target,
+        status: newStatus,
+        statusPagi: newStatus,
+        statusSiang: newStatus,
+      };
+      label = `Semua Sif: ${newStatus === 'AKTIF' ? 'Aktif Normal' : 'Tidak Digunakan'}`;
+    }
+
     syncMachineToCloud(updated);
-    setMachines((prev) =>
-      prev.map((m) => (m.id === id ? updated : m))
-    );
+    setMachines((prev) => {
+      const nextMachines = prev.map((m) => (m.id === id ? updated : m));
+      localStorage.setItem('hemo_machines_v1', JSON.stringify(nextMachines));
+      return nextMachines;
+    });
     generateDailyMachineAllocation(selectedDate);
-    const label = newStatus === 'AKTIF' ? 'Aktif Normal' : 'Tidak Digunakan';
-    showToast(`${target.name} diubah menjadi: ${label}`, 'info');
+    showToast(`${target.code} (${target.name}) diubah menjadi: ${label}`, 'info');
   };
 
-  const setMachineStatus = (id: number, newStatus: MachineStatus, reason: string = '') => {
+  const setMachineStatus = (
+    id: number,
+    newStatus: MachineStatus,
+    reason: string = '',
+    shift?: 'PAGI' | 'SIANG' | 'BOTH'
+  ) => {
     if (!checkKaruPermission('mengubah status mesin HD')) return;
     const target = machines.find((m) => m.id === id);
     if (!target) return;
     const newNotes = reason ? (target.notes ? `${target.notes} | ${reason}` : reason) : target.notes;
-    const updated = { ...target, status: newStatus, notes: newNotes };
+
+    let updated: Machine;
+    let toastLabel = '';
+
+    if (shift === 'PAGI') {
+      updated = { ...target, statusPagi: newStatus, notes: newNotes };
+      toastLabel = `Sif Pagi diset: ${newStatus}`;
+    } else if (shift === 'SIANG') {
+      updated = { ...target, statusSiang: newStatus, notes: newNotes };
+      toastLabel = `Sif Siang diset: ${newStatus}`;
+    } else {
+      updated = {
+        ...target,
+        status: newStatus,
+        statusPagi: newStatus,
+        statusSiang: newStatus,
+        notes: newNotes,
+      };
+      toastLabel = `Semua Sif diset: ${newStatus}`;
+    }
+
     syncMachineToCloud(updated);
-    setMachines((prev) =>
-      prev.map((m) => (m.id === id ? updated : m))
-    );
+    setMachines((prev) => {
+      const nextMachines = prev.map((m) => (m.id === id ? updated : m));
+      localStorage.setItem('hemo_machines_v1', JSON.stringify(nextMachines));
+      return nextMachines;
+    });
     generateDailyMachineAllocation(selectedDate);
-    showToast(`${target.name} diset: ${newStatus}`, 'info');
+    showToast(`${target.code} ${toastLabel}`, 'info');
+  };
+
+  const updateMachineShiftStatus = (
+    id: number,
+    shift: 'PAGI' | 'SIANG' | 'BOTH',
+    status: MachineStatus
+  ) => {
+    setMachineStatus(id, status, '', shift);
   };
 
   const setAllMachinesActive = () => {
     if (!checkKaruPermission('mengaktifkan semua mesin HD')) return;
     setMachines((prev) => {
-      const updated = prev.map((m) => ({ ...m, status: 'AKTIF' as MachineStatus }));
+      const updated = prev.map((m) => ({
+        ...m,
+        status: 'AKTIF' as MachineStatus,
+        statusPagi: 'AKTIF' as MachineStatus,
+        statusSiang: 'AKTIF' as MachineStatus,
+      }));
       syncAllMachinesToCloud(updated);
+      localStorage.setItem('hemo_machines_v1', JSON.stringify(updated));
       return updated;
     });
     generateDailyMachineAllocation(selectedDate);
-    showToast('Semua 30 mesin berhasil diaktifkan.', 'success');
+    showToast('Seluruh unit mesin HD berhasil diaktifkan untuk Sif Pagi & Sif Siang.', 'success');
   };
 
   const updateSettings = (newSettings: AppSettings) => {
@@ -2821,6 +2897,7 @@ export const HemoProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loadDefaultMachines,
         toggleMachineStatus,
         setMachineStatus,
+        updateMachineShiftStatus,
         setAllMachinesActive,
         updateSettings,
         markAssignmentWhatsAppSent,
