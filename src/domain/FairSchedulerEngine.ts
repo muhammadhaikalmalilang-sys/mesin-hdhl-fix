@@ -559,14 +559,24 @@ export class FairSchedulerEngine {
   ): Record<number, number[]> {
     if (nursesOnShift.length === 0 || activeMachines.length === 0) return {};
 
-    // Strictly filter to active machines only
-    const strictlyActiveMachines = activeMachines.filter(
-      (m) =>
+    // Strictly filter to active machines that are operational for this shift
+    const strictlyActiveMachines = activeMachines.filter((m) => {
+      const isActive =
         (m.status || 'AKTIF').toUpperCase() === 'AKTIF' &&
         m.status !== 'MAINTENANCE' &&
         m.status !== 'RUSAK' &&
-        m.status !== 'TIDAK_DIGUNAKAN'
-    );
+        m.status !== 'TIDAK_DIGUNAKAN';
+      if (!isActive) return false;
+
+      // Filter by operational shift if specified
+      if (shiftType === 'PAGI' && m.operationalShift === 'SIANG') {
+        return false;
+      }
+      if (shiftType === 'SIANG' && m.operationalShift === 'PAGI') {
+        return false;
+      }
+      return true;
+    });
     if (strictlyActiveMachines.length === 0) return {};
 
     const numNurses = nursesOnShift.length;

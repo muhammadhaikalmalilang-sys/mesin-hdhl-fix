@@ -4,13 +4,16 @@ import {
   Machine,
   MachineStatus,
   MachineCategory,
+  MachineOperationalShift,
   MACHINE_CATEGORY_INFO,
   MACHINE_STATUS_INFO,
+  MACHINE_OPERATIONAL_SHIFT_INFO,
   ShiftType,
 } from '../types';
 import { MachineModal } from '../components/MachineModal';
 import { ManageBayModal } from '../components/ManageBayModal';
 import { RegenerateMachineAllocationModal } from '../components/RegenerateMachineAllocationModal';
+import { WhatsAppBroadcastModal } from '../components/WhatsAppBroadcastModal';
 import { DeleteConfirmModal } from '../components/DeleteConfirmModal';
 import { ReadOnlyBanner } from '../components/ReadOnlyBanner';
 import { WhatsAppDispatcher } from '../domain/WhatsAppDispatcher';
@@ -38,7 +41,19 @@ import {
   Check,
   ArrowRight,
   Settings,
+  Calendar,
+  ChevronLeft,
+  ChevronRight,
+  Share2,
+  Columns,
+  SlidersHorizontal,
+  Clock,
+  UserCheck,
+  UserX,
 } from 'lucide-react';
+
+type MachineScreenTab = 'PAGI' | 'SIANG' | 'COMPARE' | 'MASTER';
+type ShiftStatusFilter = 'ALL' | 'ASSIGNED' | 'UNASSIGNED' | 'ISOLASI';
 
 export const MachineLayoutScreen: React.FC = () => {
   const {
@@ -46,6 +61,7 @@ export const MachineLayoutScreen: React.FC = () => {
     machines,
     dailyAssignments,
     selectedDate,
+    selectDate,
     bays: contextBays,
     updateMachine,
     addMachine,
@@ -53,23 +69,77 @@ export const MachineLayoutScreen: React.FC = () => {
     loadDefaultMachines,
     reallocateMachinesForDate,
     updateAssignment,
+    isGenerating,
     showToast,
   } = useHemo();
 
-  const [activeShiftView, setActiveShiftView] = useState<'PAGI' | 'SIANG'>('PAGI');
+  // Primary Screen Tab: Sif Pagi, Sif Siang, Perbandingan Dua Sif, atau Master Mesin
+  const [activeTab, setActiveTab] = useState<MachineScreenTab>('PAGI');
+
+  // Secondary Display Options
   const [viewMode, setViewMode] = useState<'BY_BAY' | 'GRID' | 'TABLE'>('BY_BAY');
+  const [compareViewMode, setCompareViewMode] = useState<'TABLE' | 'CARDS'>('TABLE');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedBayFilter, setSelectedBayFilter] = useState<string>('ALL');
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>('ALL');
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<string>('ALL');
+  const [selectedShiftOperationalFilter, setSelectedShiftOperationalFilter] = useState<string>('ALL');
+  const [shiftStatusFilter, setShiftStatusFilter] = useState<ShiftStatusFilter>('ALL');
+  const [compareDisparityFilter, setCompareDisparityFilter] = useState<'ALL' | 'INCOMPLETE' | 'DIFFERENT' | 'COMPLETE'>('ALL');
 
+  // Modals
   const [editingMachine, setEditingMachine] = useState<Machine | null>(null);
   const [machineToDelete, setMachineToDelete] = useState<Machine | null>(null);
-  const [assigningMachine, setAssigningMachine] = useState<Machine | null>(null);
+  const [assigningState, setAssigningState] = useState<{
+    machine: Machine;
+    targetShift: 'PAGI' | 'SIANG';
+  } | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isReallocateModalOpen, setIsReallocateModalOpen] = useState(false);
+  const [reallocateTargetShift, setReallocateTargetShift] = useState<'ALL' | 'PAGI' | 'SIANG'>('ALL');
   const [isBayModalOpen, setIsBayModalOpen] = useState(false);
   const [selectedBayToManage, setSelectedBayToManage] = useState<string | undefined>(undefined);
+  const [isBroadcastModalOpen, setIsBroadcastModalOpen] = useState(false);
+  const [broadcastInitialShift, setBroadcastInitialShift] = useState<'PAGI' | 'SIANG' | null>(null);
+
+  // Parse Date for Quick Navigator
+  const dateObj = useMemo(() => {
+    try {
+      const parts = selectedDate.split('-');
+      if (parts.length === 3) {
+        return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+      }
+    } catch {
+      // fallback
+    }
+    return new Date();
+  }, [selectedDate]);
+
+  const handlePrevDay = () => {
+    const prev = new Date(dateObj);
+    prev.setDate(prev.getDate() - 1);
+    const dStr = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}-${String(
+      prev.getDate()
+    ).padStart(2, '0')}`;
+    selectDate(dStr);
+  };
+
+  const handleNextDay = () => {
+    const next = new Date(dateObj);
+    next.setDate(next.getDate() + 1);
+    const dStr = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-${String(
+      next.getDate()
+    ).padStart(2, '0')}`;
+    selectDate(dStr);
+  };
+
+  const handleToday = () => {
+    const today = new Date();
+    const dStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(
+      today.getDate()
+    ).padStart(2, '0')}`;
+    selectDate(dStr);
+  };
 
   // Group machines by Bay for visual floor plan layout in room sequence
   const bays = useMemo(() => {
@@ -92,21 +162,15 @@ export const MachineLayoutScreen: React.FC = () => {
     return bayOrder;
   }, [contextBays, machines]);
 
-  // Nurses working on active shift
-  const nursesOnShift = useMemo(() => {
-    return dailyAssignments.filter((a) => a.shiftType === activeShiftView);
-  }, [dailyAssignments, activeShiftView]);
-
-  // Build a lookup map of machineId -> Nurse assigned on current date & shift
-  const machineNurseMap = useMemo(() => {
+  // Helper map builder for machine assignments on a specific shift
+  const buildShiftMachineNurseMap = (shiftType: 'PAGI' | 'SIANG') => {
     const map = new Map<
       number | string,
-      { nurseName: string; isLeader: boolean; nurseId: number; specialDuty?: string | null }
+      { nurseName: string; isLeader: boolean; nurseId: number; specialDuty?: string | null; assignmentId: string }
     >();
-    const shiftAssignments = dailyAssignments.filter((a) => a.shiftType === activeShiftView);
+    const shiftAssignments = dailyAssignments.filter((a) => a.shiftType === shiftType);
 
     shiftAssignments.forEach((assignment) => {
-      // 1. Resolve structured machines via WhatsAppDispatcher
       const assignedMachines = WhatsAppDispatcher.getAssignedMachinesForAssignment(assignment, machines);
       assignedMachines.forEach((m) => {
         const info = {
@@ -114,6 +178,7 @@ export const MachineLayoutScreen: React.FC = () => {
           isLeader: assignment.isLeader,
           nurseId: assignment.nurseId,
           specialDuty: assignment.specialDuty,
+          assignmentId: assignment.id,
         };
         map.set(m.id, info);
         map.set(String(m.id), info);
@@ -123,13 +188,13 @@ export const MachineLayoutScreen: React.FC = () => {
         }
       });
 
-      // 2. Also map raw assignedMachineIds
       (assignment.assignedMachineIds || []).forEach((mId) => {
         const info = {
           nurseName: assignment.nurseName,
           isLeader: assignment.isLeader,
           nurseId: assignment.nurseId,
           specialDuty: assignment.specialDuty,
+          assignmentId: assignment.id,
         };
         map.set(mId, info);
         map.set(Number(mId), info);
@@ -137,14 +202,72 @@ export const MachineLayoutScreen: React.FC = () => {
       });
     });
     return map;
-  }, [dailyAssignments, activeShiftView, machines]);
+  };
 
-  // Filtered machines sorted by room layout
+  const pagiMachineNurseMap = useMemo(() => buildShiftMachineNurseMap('PAGI'), [dailyAssignments, machines]);
+  const siangMachineNurseMap = useMemo(() => buildShiftMachineNurseMap('SIANG'), [dailyAssignments, machines]);
+
+  // Active Map depending on current tab
+  const currentActiveShift: 'PAGI' | 'SIANG' = activeTab === 'SIANG' ? 'SIANG' : 'PAGI';
+  const currentMachineNurseMap = activeTab === 'SIANG' ? siangMachineNurseMap : pagiMachineNurseMap;
+
+  // Nurses on shifts
+  const pagiNurses = useMemo(() => dailyAssignments.filter((a) => a.shiftType === 'PAGI'), [dailyAssignments]);
+  const siangNurses = useMemo(() => dailyAssignments.filter((a) => a.shiftType === 'SIANG'), [dailyAssignments]);
+  const currentShiftNurses = currentActiveShift === 'SIANG' ? siangNurses : pagiNurses;
+
+  // Machines operational for Pagi / Siang / Master
+  const machinesForCurrentShift = useMemo(() => {
+    return machines.filter((m) => {
+      if (activeTab === 'PAGI' && m.operationalShift === 'SIANG') return false;
+      if (activeTab === 'SIANG' && m.operationalShift === 'PAGI') return false;
+      return true;
+    });
+  }, [machines, activeTab]);
+
+  // Filtered machines according to activeTab and user filters
   const filteredMachines = useMemo(() => {
-    const list = machines.filter((m) => {
+    const list = machinesForCurrentShift.filter((m) => {
       if (selectedBayFilter !== 'ALL' && m.bay !== selectedBayFilter) return false;
       if (selectedCategoryFilter !== 'ALL' && m.category !== selectedCategoryFilter) return false;
       if (selectedStatusFilter !== 'ALL' && m.status !== selectedStatusFilter) return false;
+      if (selectedShiftOperationalFilter !== 'ALL' && (m.operationalShift || 'ALL') !== selectedShiftOperationalFilter) return false;
+
+      // Filter by assignment status in shift mode
+      if (activeTab === 'PAGI' || activeTab === 'SIANG') {
+        const assigned =
+          currentMachineNurseMap.get(m.id) ||
+          currentMachineNurseMap.get(String(m.id)) ||
+          (m.code ? currentMachineNurseMap.get(m.code.toUpperCase()) || currentMachineNurseMap.get(m.code.toLowerCase()) : undefined);
+
+        if (shiftStatusFilter === 'ASSIGNED' && !assigned) return false;
+        if (shiftStatusFilter === 'UNASSIGNED') {
+          const isOper = !m.status || m.status === 'AKTIF';
+          if (!isOper || assigned) return false;
+        }
+        if (shiftStatusFilter === 'ISOLASI' && m.category !== 'ISOLASI' && m.category !== 'HEPATITIS_B' && m.category !== 'HEPATITIS_C') {
+          return false;
+        }
+      }
+
+      // Filter by compare disparity
+      if (activeTab === 'COMPARE') {
+        const pagiAssigned = pagiMachineNurseMap.get(m.id) || (m.code ? pagiMachineNurseMap.get(m.code.toUpperCase()) : undefined);
+        const siangAssigned = siangMachineNurseMap.get(m.id) || (m.code ? siangMachineNurseMap.get(m.code.toUpperCase()) : undefined);
+        const isOper = !m.status || m.status === 'AKTIF';
+
+        if (compareDisparityFilter === 'INCOMPLETE') {
+          if (!isOper) return false;
+          if (pagiAssigned && siangAssigned) return false;
+        } else if (compareDisparityFilter === 'COMPLETE') {
+          if (!pagiAssigned || !siangAssigned) return false;
+        } else if (compareDisparityFilter === 'DIFFERENT') {
+          if (!pagiAssigned || !siangAssigned) return false;
+          if (pagiAssigned.nurseName === siangAssigned.nurseName) return false;
+        }
+      }
+
+      // Search query
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         const matchesCode = m.code.toLowerCase().includes(q);
@@ -153,10 +276,25 @@ export const MachineLayoutScreen: React.FC = () => {
         const matchesBrand = (m.brandModel || '').toLowerCase().includes(q);
         if (!matchesCode && !matchesName && !matchesBay && !matchesBrand) return false;
       }
+
       return true;
     });
+
     return WhatsAppDispatcher.getSortedMachines(list);
-  }, [machines, selectedBayFilter, selectedCategoryFilter, selectedStatusFilter, searchQuery]);
+  }, [
+    machinesForCurrentShift,
+    selectedBayFilter,
+    selectedCategoryFilter,
+    selectedStatusFilter,
+    selectedShiftOperationalFilter,
+    shiftStatusFilter,
+    compareDisparityFilter,
+    searchQuery,
+    activeTab,
+    currentMachineNurseMap,
+    pagiMachineNurseMap,
+    siangMachineNurseMap,
+  ]);
 
   // Group filtered machines by Bay
   const machinesByBay = useMemo(() => {
@@ -171,33 +309,64 @@ export const MachineLayoutScreen: React.FC = () => {
     return grouped;
   }, [filteredMachines, bays]);
 
-  // Unallocated active machines on current date & shift
-  const unallocatedActiveMachines = useMemo(() => {
-    return filteredMachines.filter((m) => {
-      const isOperational =
-        !m.status ||
-        m.status.toUpperCase() === 'AKTIF' ||
-        (m.status !== 'MAINTENANCE' && m.status !== 'RUSAK' && m.status !== 'TIDAK_DIGUNAKAN');
-      if (!isOperational) return false;
-      const assigned =
-        machineNurseMap.get(m.id) ||
-        machineNurseMap.get(String(m.id)) ||
-        (m.code ? machineNurseMap.get(m.code.toUpperCase()) || machineNurseMap.get(m.code.toLowerCase()) : undefined);
-      return !assigned;
-    });
-  }, [filteredMachines, machineNurseMap]);
-
-  // Summary Metrics
+  // Statistics calculation
   const stats = useMemo(() => {
-    const total = machines.length;
-    const active = machines.filter((m) => m.status === 'AKTIF').length;
-    const maintenance = machines.filter((m) => m.status === 'MAINTENANCE').length;
-    const broken = machines.filter((m) => m.status === 'RUSAK').length;
-    const isolation = machines.filter((m) => m.category === 'ISOLASI').length;
-    const hepatitis = machines.filter((m) => m.category === 'HEPATITIS_B' || m.category === 'HEPATITIS_C').length;
-    return { total, active, maintenance, broken, isolation, hepatitis };
-  }, [machines]);
+    const totalAll = machines.length;
+    const activeAll = machines.filter((m) => m.status === 'AKTIF').length;
+    const maintenanceAll = machines.filter((m) => m.status === 'MAINTENANCE').length;
+    const brokenAll = machines.filter((m) => m.status === 'RUSAK').length;
 
+    // Sif Pagi stats
+    const pagiEligible = machines.filter((m) => m.operationalShift !== 'SIANG');
+    const pagiActive = pagiEligible.filter((m) => m.status === 'AKTIF');
+    const pagiAssigned = pagiActive.filter((m) => {
+      return (
+        pagiMachineNurseMap.get(m.id) ||
+        pagiMachineNurseMap.get(String(m.id)) ||
+        (m.code ? pagiMachineNurseMap.get(m.code.toUpperCase()) : undefined)
+      );
+    });
+    const pagiUnassigned = pagiActive.length - pagiAssigned.length;
+
+    // Sif Siang stats
+    const siangEligible = machines.filter((m) => m.operationalShift !== 'PAGI');
+    const siangActive = siangEligible.filter((m) => m.status === 'AKTIF');
+    const siangAssigned = siangActive.filter((m) => {
+      return (
+        siangMachineNurseMap.get(m.id) ||
+        siangMachineNurseMap.get(String(m.id)) ||
+        (m.code ? siangMachineNurseMap.get(m.code.toUpperCase()) : undefined)
+      );
+    });
+    const siangUnassigned = siangActive.length - siangAssigned.length;
+
+    // Compare stats
+    const fullyAllocatedBothShifts = machines.filter((m) => {
+      const isPagiOk = m.operationalShift === 'SIANG' || pagiMachineNurseMap.get(m.id);
+      const isSiangOk = m.operationalShift === 'PAGI' || siangMachineNurseMap.get(m.id);
+      return isPagiOk && isSiangOk;
+    }).length;
+
+    return {
+      totalAll,
+      activeAll,
+      maintenanceAll,
+      brokenAll,
+      pagiEligibleCount: pagiEligible.length,
+      pagiActiveCount: pagiActive.length,
+      pagiAssignedCount: pagiAssigned.length,
+      pagiUnassignedCount: pagiUnassigned,
+      pagiNurseCount: pagiNurses.length,
+      siangEligibleCount: siangEligible.length,
+      siangActiveCount: siangActive.length,
+      siangAssignedCount: siangAssigned.length,
+      siangUnassignedCount: siangUnassigned,
+      siangNurseCount: siangNurses.length,
+      fullyAllocatedBothShifts,
+    };
+  }, [machines, pagiMachineNurseMap, siangMachineNurseMap, pagiNurses, siangNurses]);
+
+  // Status toggle handler
   const handleToggleStatus = (machine: Machine) => {
     if (!isAdmin) return;
     const nextStatus: MachineStatus =
@@ -214,6 +383,7 @@ export const MachineLayoutScreen: React.FC = () => {
     showToast(`Status ${machine.code} diubah menjadi ${MACHINE_STATUS_INFO[nextStatus].label}`, 'info');
   };
 
+  // Save machine handler
   const handleSaveMachine = (m: Omit<Machine, 'id'> | Machine) => {
     if (!isAdmin) return;
     if ('id' in m) {
@@ -226,14 +396,15 @@ export const MachineLayoutScreen: React.FC = () => {
     setEditingMachine(null);
   };
 
-  const handleManualAssign = (nurseAssignmentId: string, machineId: number) => {
+  // Manual Assign handler
+  const handleManualAssign = (nurseAssignmentId: string, machineId: number, targetShift: 'PAGI' | 'SIANG') => {
     if (!isAdmin) return;
     const targetAssignment = dailyAssignments.find((a) => a.id === nurseAssignmentId);
     if (!targetAssignment) return;
 
-    // Check if machine is already assigned to someone else in this shift and remove it
+    // Check if machine is already assigned to someone else on this shift and unassign it
     dailyAssignments.forEach((a) => {
-      if (a.shiftType === activeShiftView && a.assignedMachineIds.includes(machineId) && a.id !== targetAssignment.id) {
+      if (a.shiftType === targetShift && a.assignedMachineIds.includes(machineId) && a.id !== targetAssignment.id) {
         const remaining = a.assignedMachineIds.filter((id) => id !== machineId);
         updateAssignment(a, a.shiftType, remaining, a.isLeader, a.notes, a.specialDuty);
       }
@@ -247,7 +418,7 @@ export const MachineLayoutScreen: React.FC = () => {
       newSpecialDuty = newSpecialDuty && newSpecialDuty.trim() !== '' ? `${newSpecialDuty.trim()}, CITO` : 'CITO';
       showToast(`Mesin Isolasi dialokasikan ke ${targetAssignment.nurseName} (Tugas Khusus CITO ditambahkan)`, 'success');
     } else {
-      showToast(`Mesin berhasil dialokasikan ke ${targetAssignment.nurseName}!`, 'success');
+      showToast(`Mesin dialokasikan ke ${targetAssignment.nurseName} untuk Sif ${targetShift === 'PAGI' ? 'Pagi' : 'Siang'}!`, 'success');
     }
 
     const updatedMachines = Array.from(new Set([...targetAssignment.assignedMachineIds, machineId]));
@@ -259,93 +430,385 @@ export const MachineLayoutScreen: React.FC = () => {
       targetAssignment.notes,
       newSpecialDuty
     );
-    setAssigningMachine(null);
+    setAssigningState(null);
   };
 
   return (
     <div className="pb-24 space-y-4">
       <ReadOnlyBanner actionDescription="menambah data mesin, merubah status operasional, atau mengalokasikan mesin HD" />
 
-      {/* Main Top Header & Summary Card */}
+      {/* TOP HEADER & NAVIGATION BAR */}
       <div className="bg-white rounded-2xl p-4 sm:p-5 shadow-sm border border-slate-200 space-y-4">
+        {/* Title, Subtitle, & Date Navigator */}
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2.5">
-              <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white shadow-sm ring-2 ring-blue-100">
-                <Cpu className="w-5 h-5" />
-              </div>
-              <div>
-                <h2 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">
-                  Status & Denah {machines.length} Mesin HD
-                </h2>
-                <p className="text-xs sm:text-sm text-slate-600 font-medium">
-                  Monitoring alokasi bed, penanggung jawab perawat, dan zonasi infeksius tanggal{' '}
-                  <span className="font-extrabold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200">
-                    {selectedDate}
-                  </span>
-                </p>
-              </div>
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-blue-700 to-indigo-600 flex items-center justify-center text-white shadow-md shadow-blue-500/20 ring-4 ring-blue-50 shrink-0">
+              <Cpu className="w-6 h-6" />
+            </div>
+            <div>
+              <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
+                Pengelolaan & Denah Mesin HD
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-500 font-medium">
+                Pemisahan operasional mesin per sif, penugasan perawat, dan zonasi infeksius
+              </p>
             </div>
           </div>
 
-          {/* Sif & Actions Bar */}
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Shift View Toggle */}
-            <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200">
-              <button
-                onClick={() => setActiveShiftView('PAGI')}
-                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                  activeShiftView === 'PAGI'
-                    ? 'bg-blue-600 text-white shadow-sm'
-                    : 'text-slate-700 hover:text-slate-900 hover:bg-slate-200/70'
+          {/* Quick Date Navigator Bar */}
+          <div className="flex items-center gap-1.5 bg-slate-100/90 p-1 rounded-xl border border-slate-200 text-xs self-start lg:self-auto">
+            <button
+              onClick={handlePrevDay}
+              className="p-1.5 hover:bg-white text-slate-600 hover:text-slate-900 rounded-lg transition-all"
+              title="Hari Sebelumnya"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <div className="flex items-center gap-1.5 px-2.5 py-1 font-extrabold text-slate-800">
+              <Calendar className="w-3.5 h-3.5 text-blue-600" />
+              <span>{WhatsAppDispatcher.formatIndonesianDate(selectedDate)}</span>
+            </div>
+            <button
+              onClick={handleToday}
+              className="px-2 py-1 bg-white hover:bg-blue-50 text-blue-700 font-bold rounded-lg border border-slate-200 shadow-2xs transition-all"
+              title="Kembali ke Hari Ini"
+            >
+              Hari Ini
+            </button>
+            <button
+              onClick={handleNextDay}
+              className="p-1.5 hover:bg-white text-slate-600 hover:text-slate-900 rounded-lg transition-all"
+              title="Hari Berikutnya"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* PRIMARY SHIFT TABS: PAGI vs SIANG vs PERBANDINGAN DUA SIF vs MASTER */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 pt-2 border-t border-slate-100">
+          {/* Tab 1: Sif Pagi */}
+          <button
+            onClick={() => setActiveTab('PAGI')}
+            className={`p-3 rounded-xl border-2 text-left transition-all relative overflow-hidden cursor-pointer ${
+              activeTab === 'PAGI'
+                ? 'bg-sky-50/80 border-sky-500 text-sky-950 shadow-sm ring-2 ring-sky-500/20'
+                : 'bg-slate-50/70 border-slate-200 text-slate-600 hover:bg-slate-100/80 hover:border-slate-300'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div
+                  className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs ${
+                    activeTab === 'PAGI' ? 'bg-sky-600 text-white shadow-2xs' : 'bg-slate-200 text-slate-600'
+                  }`}
+                >
+                  <Sun className="w-4 h-4" />
+                </div>
+                <div>
+                  <span className="text-xs font-black uppercase tracking-wider block">Mesin Sif Pagi</span>
+                  <span className="text-[10px] text-slate-500 font-medium">06:30 - 14:00 WIB</span>
+                </div>
+              </div>
+              <span
+                className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
+                  stats.pagiUnassignedCount === 0
+                    ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                    : 'bg-amber-100 text-amber-800 border-amber-300'
                 }`}
               >
-                <Sun className="w-4 h-4 text-amber-300" />
-                <span>Sif Pagi (06:30 - 14:00)</span>
-              </button>
-              <button
-                onClick={() => setActiveShiftView('SIANG')}
-                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                  activeShiftView === 'SIANG'
-                    ? 'bg-amber-600 text-white shadow-sm'
-                    : 'text-slate-700 hover:text-slate-900 hover:bg-slate-200/70'
+                {stats.pagiAssignedCount}/{stats.pagiActiveCount} Bed
+              </span>
+            </div>
+          </button>
+
+          {/* Tab 2: Sif Siang */}
+          <button
+            onClick={() => setActiveTab('SIANG')}
+            className={`p-3 rounded-xl border-2 text-left transition-all relative overflow-hidden cursor-pointer ${
+              activeTab === 'SIANG'
+                ? 'bg-amber-50/80 border-amber-500 text-amber-950 shadow-sm ring-2 ring-amber-500/20'
+                : 'bg-slate-50/70 border-slate-200 text-slate-600 hover:bg-slate-100/80 hover:border-slate-300'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div
+                  className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs ${
+                    activeTab === 'SIANG' ? 'bg-amber-600 text-white shadow-2xs' : 'bg-slate-200 text-slate-600'
+                  }`}
+                >
+                  <Sunset className="w-4 h-4" />
+                </div>
+                <div>
+                  <span className="text-xs font-black uppercase tracking-wider block">Mesin Sif Siang</span>
+                  <span className="text-[10px] text-slate-500 font-medium">13:30 - 21:00 WIB</span>
+                </div>
+              </div>
+              <span
+                className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
+                  stats.siangUnassignedCount === 0
+                    ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                    : 'bg-amber-100 text-amber-800 border-amber-300'
                 }`}
               >
-                <Sunset className="w-4 h-4 text-amber-200" />
-                <span>Sif Siang (13:30 - 21:00)</span>
+                {stats.siangAssignedCount}/{stats.siangActiveCount} Bed
+              </span>
+            </div>
+          </button>
+
+          {/* Tab 3: Perbandingan Dua Sif (Compare) */}
+          <button
+            onClick={() => setActiveTab('COMPARE')}
+            className={`p-3 rounded-xl border-2 text-left transition-all relative overflow-hidden cursor-pointer ${
+              activeTab === 'COMPARE'
+                ? 'bg-indigo-50/80 border-indigo-500 text-indigo-950 shadow-sm ring-2 ring-indigo-500/20'
+                : 'bg-slate-50/70 border-slate-200 text-slate-600 hover:bg-slate-100/80 hover:border-slate-300'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div
+                  className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs ${
+                    activeTab === 'COMPARE' ? 'bg-indigo-600 text-white shadow-2xs' : 'bg-slate-200 text-slate-600'
+                  }`}
+                >
+                  <Columns className="w-4 h-4" />
+                </div>
+                <div>
+                  <span className="text-xs font-black uppercase tracking-wider block">Perbandingan Dua Sif</span>
+                  <span className="text-[10px] text-slate-500 font-medium">Rekap Pagi vs Siang</span>
+                </div>
+              </div>
+              <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-300">
+                Berdampingan
+              </span>
+            </div>
+          </button>
+
+          {/* Tab 4: Master Unit Mesin */}
+          <button
+            onClick={() => setActiveTab('MASTER')}
+            className={`p-3 rounded-xl border-2 text-left transition-all relative overflow-hidden cursor-pointer ${
+              activeTab === 'MASTER'
+                ? 'bg-slate-100 border-slate-700 text-slate-900 shadow-sm ring-2 ring-slate-400/20'
+                : 'bg-slate-50/70 border-slate-200 text-slate-600 hover:bg-slate-100/80 hover:border-slate-300'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div
+                  className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs ${
+                    activeTab === 'MASTER' ? 'bg-slate-800 text-white shadow-2xs' : 'bg-slate-200 text-slate-600'
+                  }`}
+                >
+                  <Cpu className="w-4 h-4" />
+                </div>
+                <div>
+                  <span className="text-xs font-black uppercase tracking-wider block">Kelola Unit Mesin</span>
+                  <span className="text-[10px] text-slate-500 font-medium">Spesifikasi & Master Bay</span>
+                </div>
+              </div>
+              <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 border border-slate-300">
+                {stats.totalAll} Unit
+              </span>
+            </div>
+          </button>
+        </div>
+
+        {/* SHIFT-SPECIFIC ACTION BANNER (PAGI) */}
+        {activeTab === 'PAGI' && (
+          <div className="p-4 rounded-xl bg-gradient-to-r from-sky-600 via-blue-600 to-indigo-600 text-white shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-white/15 backdrop-blur-xs flex items-center justify-center text-amber-300 shadow-inner">
+                <Sun className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-sm sm:text-base tracking-tight flex items-center gap-2">
+                  <span>Operasional Mesin Sif Pagi</span>
+                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-white/20 border border-white/30">
+                    06:30 - 14:00 WIB
+                  </span>
+                </h3>
+                <p className="text-xs text-sky-100 font-medium">
+                  {stats.pagiNurseCount} perawat bertugas memegang {stats.pagiAssignedCount} dari {stats.pagiActiveCount} mesin aktif.
+                  {stats.pagiUnassignedCount > 0 ? (
+                    <span className="font-black text-amber-200 ml-1">
+                      ⚠️ {stats.pagiUnassignedCount} mesin belum ada penanggung jawab!
+                    </span>
+                  ) : (
+                    <span className="font-bold text-emerald-200 ml-1">
+                      ✓ Semua mesin aktif telah teralokasikan.
+                    </span>
+                  )}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap self-stretch sm:self-auto justify-end">
+              {isAdmin && (
+                <button
+                  onClick={() => {
+                    setReallocateTargetShift('PAGI');
+                    setIsReallocateModalOpen(true);
+                  }}
+                  disabled={isGenerating}
+                  className="px-3.5 py-2 bg-white text-blue-700 hover:bg-blue-50 font-black rounded-xl text-xs shadow-sm transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  title="Alokasikan mesin khusus Sif Pagi secara adil tanpa mengubah Sif Siang"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                  <span>{isGenerating ? 'Mengalokasikan...' : 'Alokasi Otomatis Pagi'}</span>
+                </button>
+              )}
+
+              <button
+                onClick={() => {
+                  setBroadcastInitialShift('PAGI');
+                  setIsBroadcastModalOpen(true);
+                }}
+                className="px-3.5 py-2 bg-white/15 hover:bg-white/25 border border-white/30 text-white font-bold rounded-xl text-xs backdrop-blur-xs transition-all flex items-center gap-1.5 cursor-pointer"
+                title="Buka atau bagikan format WhatsApp jadwal mesin Sif Pagi"
+              >
+                <Share2 className="w-3.5 h-3.5" />
+                <span>Kirim Rekap WA Pagi</span>
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* SHIFT-SPECIFIC ACTION BANNER (SIANG) */}
+        {activeTab === 'SIANG' && (
+          <div className="p-4 rounded-xl bg-gradient-to-r from-amber-600 via-orange-600 to-rose-600 text-white shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-white/15 backdrop-blur-xs flex items-center justify-center text-amber-200 shadow-inner">
+                <Sunset className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-sm sm:text-base tracking-tight flex items-center gap-2">
+                  <span>Operasional Mesin Sif Siang</span>
+                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-white/20 border border-white/30">
+                    13:30 - 21:00 WIB
+                  </span>
+                </h3>
+                <p className="text-xs text-amber-100 font-medium">
+                  {stats.siangNurseCount} perawat bertugas memegang {stats.siangAssignedCount} dari {stats.siangActiveCount} mesin aktif.
+                  {stats.siangUnassignedCount > 0 ? (
+                    <span className="font-black text-yellow-200 ml-1">
+                      ⚠️ {stats.siangUnassignedCount} mesin belum ada penanggung jawab!
+                    </span>
+                  ) : (
+                    <span className="font-bold text-emerald-200 ml-1">
+                      ✓ Semua mesin aktif telah teralokasikan.
+                    </span>
+                  )}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap self-stretch sm:self-auto justify-end">
+              {isAdmin && (
+                <button
+                  onClick={() => {
+                    setReallocateTargetShift('SIANG');
+                    setIsReallocateModalOpen(true);
+                  }}
+                  disabled={isGenerating}
+                  className="px-3.5 py-2 bg-white text-orange-700 hover:bg-orange-50 font-black rounded-xl text-xs shadow-sm transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  title="Alokasikan mesin khusus Sif Siang secara adil tanpa mengubah Sif Pagi"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                  <span>{isGenerating ? 'Mengalokasikan...' : 'Alokasi Otomatis Siang'}</span>
+                </button>
+              )}
+
+              <button
+                onClick={() => {
+                  setBroadcastInitialShift('SIANG');
+                  setIsBroadcastModalOpen(true);
+                }}
+                className="px-3.5 py-2 bg-white/15 hover:bg-white/25 border border-white/30 text-white font-bold rounded-xl text-xs backdrop-blur-xs transition-all flex items-center gap-1.5 cursor-pointer"
+                title="Buka atau bagikan format WhatsApp jadwal mesin Sif Siang"
+              >
+                <Share2 className="w-3.5 h-3.5" />
+                <span>Kirim Rekap WA Siang</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* SHIFT-SPECIFIC ACTION BANNER (COMPARE) */}
+        {activeTab === 'COMPARE' && (
+          <div className="p-4 rounded-xl bg-gradient-to-r from-indigo-700 via-purple-700 to-slate-800 text-white shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-white/15 backdrop-blur-xs flex items-center justify-center text-indigo-200 shadow-inner">
+                <Columns className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-sm sm:text-base tracking-tight">
+                  Perbandingan & Rekapitulasi Dua Sif Berdampingan
+                </h3>
+                <p className="text-xs text-indigo-100 font-medium">
+                  {stats.fullyAllocatedBothShifts} dari {stats.totalAll} mesin terisi penanggung jawab di kedua sif (Pagi & Siang).
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap self-stretch sm:self-auto justify-end">
+              {isAdmin && (
+                <button
+                  onClick={() => {
+                    setReallocateTargetShift('ALL');
+                    setIsReallocateModalOpen(true);
+                  }}
+                  disabled={isGenerating}
+                  className="px-3.5 py-2 bg-white text-indigo-800 hover:bg-indigo-50 font-black rounded-xl text-xs shadow-sm transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  title="Alokasi mesin untuk kedua sif sekaligus"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Alokasikan Kedua Sif</span>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* MASTER UNIT MESIN BANNER */}
+        {activeTab === 'MASTER' && (
+          <div className="p-4 rounded-xl bg-slate-900 text-white shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-blue-400">
+                <Cpu className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-sm sm:text-base tracking-tight">
+                  Master Data Mesin Hemodialisis
+                </h3>
+                <p className="text-xs text-slate-300 font-medium">
+                  Atur spesifikasi, bay ruangan, jadwal ketersediaan sif (Pagi/Siang), serta status maintenance mesin.
+                </p>
+              </div>
             </div>
 
             {isAdmin && (
-              <div className="flex items-center gap-1.5 flex-wrap">
+              <div className="flex items-center gap-2 flex-wrap self-stretch sm:self-auto justify-end">
                 <button
                   onClick={() => {
                     setSelectedBayToManage(undefined);
                     setIsBayModalOpen(true);
                   }}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border-2 border-indigo-300 rounded-xl text-xs font-black shadow-2xs transition-colors cursor-pointer"
-                  title="Atur Status, Nama, dan Kategori Bay"
+                  className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl text-xs shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
                 >
-                  <Settings className="w-3.5 h-3.5 text-indigo-700" />
-                  <span>Atur & Kelola Bay</span>
-                </button>
-
-                <button
-                  onClick={() => setIsReallocateModalOpen(true)}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-extrabold shadow-sm transition-all"
-                  title="Alokasikan mesin secara adil dan merata"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-                  Alokasi Otomatis
+                  <Settings className="w-3.5 h-3.5" />
+                  <span>Kelola Bay</span>
                 </button>
 
                 <button
                   onClick={loadDefaultMachines}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-xl text-xs font-bold shadow-2xs transition-colors"
-                  title="Pulihkan dan pastikan semua 30 mesin HD tampil lengkap"
+                  className="px-3.5 py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded-xl text-xs shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
+                  title="Pulihkan seluruh 30 mesin dialisis bawaan"
                 >
-                  <RotateCcw className="w-3.5 h-3.5 text-emerald-600" />
-                  Pulihkan 30 Mesin
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Pulihkan 30 Mesin</span>
                 </button>
 
                 <button
@@ -353,91 +816,232 @@ export const MachineLayoutScreen: React.FC = () => {
                     setEditingMachine(null);
                     setIsModalOpen(true);
                   }}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold shadow-sm transition-colors"
+                  className="px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl text-xs shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  Tambah
+                  <span>Tambah Mesin</span>
                 </button>
               </div>
             )}
           </div>
-        </div>
+        )}
 
-        {/* High-Visibility Stat Cards */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 pt-1">
-          <div className="bg-slate-50 p-3 rounded-xl border border-slate-300 shadow-2xs">
-            <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block">Total Mesin</span>
-            <div className="text-xl font-black text-slate-900 mt-0.5">{stats.total} Bed</div>
-            <span className="text-[10px] text-slate-500 font-medium">Kapasitas Unit HD</span>
+        {/* SHIFT-SPECIFIC KPI STATS (For PAGI or SIANG) */}
+        {(activeTab === 'PAGI' || activeTab === 'SIANG') && (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 pt-1">
+            <div className="bg-slate-50 p-3 rounded-xl border border-slate-300 shadow-2xs">
+              <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block">
+                Mesin Operasional
+              </span>
+              <div className="text-xl font-black text-slate-900 mt-0.5">
+                {activeTab === 'PAGI' ? stats.pagiEligibleCount : stats.siangEligibleCount} Bed
+              </div>
+              <span className="text-[10px] text-slate-500 font-medium">
+                Sif {activeTab === 'PAGI' ? 'Pagi' : 'Siang'}
+              </span>
+            </div>
+
+            <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-300 shadow-2xs">
+              <span className="text-[11px] font-bold text-emerald-800 uppercase tracking-wider block">
+                Aktif Siap Pakai
+              </span>
+              <div className="text-xl font-black text-emerald-900 mt-0.5">
+                {activeTab === 'PAGI' ? stats.pagiActiveCount : stats.siangActiveCount} Bed
+              </div>
+              <span className="text-[10px] text-emerald-700 font-semibold">Siap Pelayanan</span>
+            </div>
+
+            <div className="bg-blue-50 p-3 rounded-xl border border-blue-300 shadow-2xs">
+              <span className="text-[11px] font-bold text-blue-800 uppercase tracking-wider block">
+                Sudah Ada PJ
+              </span>
+              <div className="text-xl font-black text-blue-900 mt-0.5">
+                {activeTab === 'PAGI' ? stats.pagiAssignedCount : stats.siangAssignedCount} Bed
+              </div>
+              <span className="text-[10px] text-blue-700 font-semibold">
+                {Math.round(
+                  ((activeTab === 'PAGI' ? stats.pagiAssignedCount : stats.siangAssignedCount) /
+                    Math.max(1, activeTab === 'PAGI' ? stats.pagiActiveCount : stats.siangActiveCount)) *
+                    100
+                )}
+                % teralokasi
+              </span>
+            </div>
+
+            <div
+              className={`p-3 rounded-xl border shadow-2xs ${
+                (activeTab === 'PAGI' ? stats.pagiUnassignedCount : stats.siangUnassignedCount) > 0
+                  ? 'bg-amber-50 border-amber-300 text-amber-900'
+                  : 'bg-slate-50 border-slate-200 text-slate-500'
+              }`}
+            >
+              <span className="text-[11px] font-bold uppercase tracking-wider block">
+                Belum Ada PJ
+              </span>
+              <div
+                className={`text-xl font-black mt-0.5 ${
+                  (activeTab === 'PAGI' ? stats.pagiUnassignedCount : stats.siangUnassignedCount) > 0
+                    ? 'text-amber-900'
+                    : 'text-slate-700'
+                }`}
+              >
+                {activeTab === 'PAGI' ? stats.pagiUnassignedCount : stats.siangUnassignedCount} Bed
+              </div>
+              <span className="text-[10px] font-medium">
+                {(activeTab === 'PAGI' ? stats.pagiUnassignedCount : stats.siangUnassignedCount) > 0
+                  ? 'Perlu Ditugaskan'
+                  : 'Semua Ber-PJ'}
+              </span>
+            </div>
+
+            <div className="bg-purple-50 p-3 rounded-xl border border-purple-300 shadow-2xs col-span-2 sm:col-span-1">
+              <span className="text-[11px] font-bold text-purple-900 uppercase tracking-wider block">
+                Perawat Dinas Sif
+              </span>
+              <div className="text-xl font-black text-purple-900 mt-0.5">
+                {currentShiftNurses.length} Orang
+              </div>
+              <span className="text-[10px] text-purple-800 font-bold">
+                ~
+                {currentShiftNurses.length > 0
+                  ? (
+                      (activeTab === 'PAGI' ? stats.pagiAssignedCount : stats.siangAssignedCount) /
+                      currentShiftNurses.length
+                    ).toFixed(1)
+                  : 0}{' '}
+                bed/perawat
+              </span>
+            </div>
           </div>
+        )}
 
-          <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-300 shadow-2xs">
-            <span className="text-[11px] font-bold text-emerald-800 uppercase tracking-wider block">Aktif & Siap Pakai</span>
-            <div className="text-xl font-black text-emerald-900 mt-0.5">{stats.active} Bed</div>
-            <span className="text-[10px] text-emerald-700 font-semibold">Siap Pelayanan Pasien</span>
+        {/* QUICK FILTER PILLS FOR CURRENT SHIFT */}
+        {(activeTab === 'PAGI' || activeTab === 'SIANG') && (
+          <div className="flex items-center gap-1.5 flex-wrap pt-2 border-t border-slate-100 text-xs">
+            <span className="text-slate-500 font-bold text-[11px] mr-1">Filter Penugasan Sif:</span>
+            <button
+              onClick={() => setShiftStatusFilter('ALL')}
+              className={`px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${
+                shiftStatusFilter === 'ALL'
+                  ? activeTab === 'PAGI'
+                    ? 'bg-sky-600 text-white shadow-2xs'
+                    : 'bg-amber-600 text-white shadow-2xs'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+              }`}
+            >
+              Semua Mesin Sif ({machinesForCurrentShift.length})
+            </button>
+
+            <button
+              onClick={() => setShiftStatusFilter('UNASSIGNED')}
+              className={`px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                shiftStatusFilter === 'UNASSIGNED'
+                  ? 'bg-rose-600 text-white shadow-2xs'
+                  : (activeTab === 'PAGI' ? stats.pagiUnassignedCount : stats.siangUnassignedCount) > 0
+                  ? 'bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+              }`}
+            >
+              <AlertCircle className="w-3.5 h-3.5" />
+              <span>
+                Belum Ada PJ ({activeTab === 'PAGI' ? stats.pagiUnassignedCount : stats.siangUnassignedCount})
+              </span>
+            </button>
+
+            <button
+              onClick={() => setShiftStatusFilter('ASSIGNED')}
+              className={`px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${
+                shiftStatusFilter === 'ASSIGNED'
+                  ? 'bg-emerald-600 text-white shadow-2xs'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+              }`}
+            >
+              Sudah Ada PJ ({activeTab === 'PAGI' ? stats.pagiAssignedCount : stats.siangAssignedCount})
+            </button>
+
+            <button
+              onClick={() => setShiftStatusFilter('ISOLASI')}
+              className={`px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                shiftStatusFilter === 'ISOLASI'
+                  ? 'bg-purple-600 text-white shadow-2xs'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+              }`}
+            >
+              <ShieldAlert className="w-3.5 h-3.5" />
+              <span>Ruang Isolasi & Hep</span>
+            </button>
           </div>
+        )}
 
-          <div className="bg-amber-50 p-3 rounded-xl border border-amber-300 shadow-2xs">
-            <span className="text-[11px] font-bold text-amber-900 uppercase tracking-wider block">Maintenance</span>
-            <div className="text-xl font-black text-amber-900 mt-0.5">{stats.maintenance} Bed</div>
-            <span className="text-[10px] text-amber-800 font-semibold">Kalibrasi / Pemeliharaan</span>
-          </div>
-
-          <div className="bg-rose-50 p-3 rounded-xl border border-rose-300 shadow-2xs">
-            <span className="text-[11px] font-bold text-rose-900 uppercase tracking-wider block">Rusak / Tidak Aktif</span>
-            <div className="text-xl font-black text-rose-900 mt-0.5">{stats.broken} Bed</div>
-            <span className="text-[10px] text-rose-800 font-semibold">Menunggu Perbaikan</span>
-          </div>
-
-          <div className="bg-purple-50 p-3 rounded-xl border border-purple-300 shadow-2xs col-span-2 sm:col-span-1">
-            <span className="text-[11px] font-bold text-purple-900 uppercase tracking-wider block">Ruang Isolasi & Hep</span>
-            <div className="text-xl font-black text-purple-900 mt-0.5">{stats.isolation + stats.hepatitis} Mesin</div>
-            <span className="text-[10px] text-purple-800 font-bold">Wajib Perawat CITO</span>
-          </div>
-        </div>
-
-        {/* View Mode Switcher, Search & Filters Toolbar */}
+        {/* TOOLBAR: SEARCH, BAY SELECTOR, CATEGORY & VIEW MODE */}
         <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 pt-2 border-t border-slate-200">
-          {/* View Mode Buttons */}
-          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs shrink-0">
-            <button
-              onClick={() => setViewMode('BY_BAY')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold transition-all ${
-                viewMode === 'BY_BAY'
-                  ? 'bg-white text-blue-700 shadow-xs border border-slate-200'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <Layers className="w-3.5 h-3.5 text-blue-600" />
-              <span>Per Ruangan (Bay)</span>
-            </button>
+          {/* View Mode Switcher */}
+          {activeTab !== 'COMPARE' ? (
+            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs shrink-0">
+              <button
+                onClick={() => setViewMode('BY_BAY')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${
+                  viewMode === 'BY_BAY'
+                    ? 'bg-white text-blue-700 shadow-xs border border-slate-200'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5 text-blue-600" />
+                <span>Per Ruangan (Bay)</span>
+              </button>
 
-            <button
-              onClick={() => setViewMode('GRID')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold transition-all ${
-                viewMode === 'GRID'
-                  ? 'bg-white text-blue-700 shadow-xs border border-slate-200'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <LayoutGrid className="w-3.5 h-3.5 text-blue-600" />
-              <span>Grid Lengkap</span>
-            </button>
+              <button
+                onClick={() => setViewMode('GRID')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${
+                  viewMode === 'GRID'
+                    ? 'bg-white text-blue-700 shadow-xs border border-slate-200'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <LayoutGrid className="w-3.5 h-3.5 text-blue-600" />
+                <span>Grid Lengkap</span>
+              </button>
 
-            <button
-              onClick={() => setViewMode('TABLE')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold transition-all ${
-                viewMode === 'TABLE'
-                  ? 'bg-white text-blue-700 shadow-xs border border-slate-200'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <List className="w-3.5 h-3.5 text-blue-600" />
-              <span>Daftar Tabel</span>
-            </button>
-          </div>
+              <button
+                onClick={() => setViewMode('TABLE')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${
+                  viewMode === 'TABLE'
+                    ? 'bg-white text-blue-700 shadow-xs border border-slate-200'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <List className="w-3.5 h-3.5 text-blue-600" />
+                <span>Daftar Tabel</span>
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs shrink-0">
+              <button
+                onClick={() => setCompareViewMode('TABLE')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${
+                  compareViewMode === 'TABLE'
+                    ? 'bg-white text-indigo-700 shadow-xs border border-slate-200'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <List className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Tabel Komparasi</span>
+              </button>
+              <button
+                onClick={() => setCompareViewMode('CARDS')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${
+                  compareViewMode === 'CARDS'
+                    ? 'bg-white text-indigo-700 shadow-xs border border-slate-200'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Columns className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Kartu Split</span>
+              </button>
+            </div>
+          )}
 
-          {/* Filters & Search */}
+          {/* Search & Filters */}
           <div className="flex flex-wrap items-center gap-2 text-xs flex-1 justify-end">
             <div className="relative min-w-[140px] flex-1 sm:max-w-xs">
               <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -463,119 +1067,69 @@ export const MachineLayoutScreen: React.FC = () => {
               ))}
             </select>
 
-            <select
-              value={selectedCategoryFilter}
-              onChange={(e) => setSelectedCategoryFilter(e.target.value)}
-              className="px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-800 font-semibold"
-            >
-              <option value="ALL">Semua Kategori</option>
-              <option value="REGULER">Reguler</option>
-              <option value="HEPATITIS_B">Hepatitis B</option>
-              <option value="HEPATITIS_C">Hepatitis C</option>
-              <option value="ISOLASI">Isolasi Khusus</option>
-            </select>
-
-            <select
-              value={selectedStatusFilter}
-              onChange={(e) => setSelectedStatusFilter(e.target.value)}
-              className="px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-800 font-semibold"
-            >
-              <option value="ALL">Semua Status</option>
-              <option value="AKTIF">Aktif</option>
-              <option value="MAINTENANCE">Maintenance</option>
-              <option value="RUSAK">Rusak</option>
-            </select>
-
-            {(selectedBayFilter !== 'ALL' ||
-              selectedCategoryFilter !== 'ALL' ||
-              selectedStatusFilter !== 'ALL' ||
-              searchQuery.trim() !== '') && (
-              <button
-                onClick={() => {
-                  setSelectedBayFilter('ALL');
-                  setSelectedCategoryFilter('ALL');
-                  setSelectedStatusFilter('ALL');
-                  setSearchQuery('');
-                }}
-                className="px-2 py-1 text-xs text-blue-700 hover:text-blue-900 font-bold underline cursor-pointer"
+            {activeTab === 'COMPARE' ? (
+              <select
+                value={compareDisparityFilter}
+                onChange={(e) => setCompareDisparityFilter(e.target.value as any)}
+                className="px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-800 font-semibold"
               >
-                Reset
-              </button>
+                <option value="ALL">Semua Status Sif</option>
+                <option value="INCOMPLETE">Belum Lengkap (Ada yang Kosong)</option>
+                <option value="COMPLETE">Lengkap Kedua Sif</option>
+                <option value="DIFFERENT">PJ Pagi ≠ PJ Siang</option>
+              </select>
+            ) : (
+              <select
+                value={selectedCategoryFilter}
+                onChange={(e) => setSelectedCategoryFilter(e.target.value)}
+                className="px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-800 font-semibold"
+              >
+                <option value="ALL">Semua Kategori</option>
+                <option value="REGULER">Reguler</option>
+                <option value="HEPATITIS_B">Hepatitis B</option>
+                <option value="HEPATITIS_C">Hepatitis C</option>
+                <option value="ISOLASI">Isolasi Khusus</option>
+              </select>
+            )}
+
+            {activeTab === 'MASTER' && (
+              <select
+                value={selectedShiftOperationalFilter}
+                onChange={(e) => setSelectedShiftOperationalFilter(e.target.value)}
+                className="px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-800 font-semibold"
+              >
+                <option value="ALL">Semua Jadwal Sif</option>
+                <option value="ALL">Pagi & Siang (Penuh)</option>
+                <option value="PAGI">Hanya Sif Pagi</option>
+                <option value="SIANG">Hanya Sif Siang</option>
+              </select>
             )}
           </div>
         </div>
       </div>
 
-      {/* Isolation Machines Clinical Rule Reminder */}
-      <div className="bg-rose-50 border-2 border-rose-300 rounded-2xl p-3.5 sm:p-4 flex items-start gap-3 text-rose-950 shadow-xs">
-        <div className="w-8 h-8 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0 mt-0.5 shadow-xs">
-          <ShieldAlert className="w-5 h-5" />
-        </div>
-        <div className="text-xs sm:text-sm">
-          <p className="font-black text-rose-900 flex items-center gap-1.5">
-            Kebijakan Alokasi Ruang Isolasi & Mesin Khusus:
-          </p>
-          <p className="text-rose-800 mt-0.5 leading-relaxed font-medium">
-            Hanya Perawat dengan <b>Tugas Khusus CITO</b> yang diperbolehkan dialokasikan ke Mesin Ruang Isolasi.
-            Sistem otomatis menandai dan mengunci kepatuhan ini saat penjadwalan.
-          </p>
-        </div>
-      </div>
-
-      {/* Active Unallocated Machines Alert */}
-      {unallocatedActiveMachines.length > 0 && (
-        <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-amber-950 shadow-xs">
-          <div className="flex items-start gap-3">
-            <div className="w-9 h-9 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 mt-0.5 shadow-xs">
-              <AlertCircle className="w-5 h-5" />
-            </div>
-            <div>
-              <p className="text-sm font-black text-amber-900">
-                {unallocatedActiveMachines.length} Mesin Aktif Belum Dialokasikan (Sif{' '}
-                {activeShiftView === 'PAGI' ? 'Pagi' : 'Siang'}, {selectedDate})
-              </p>
-              <p className="text-xs text-amber-800 font-medium">
-                {nursesOnShift.length > 0
-                  ? `Tersedia ${nursesOnShift.length} perawat berdinas pada Sif ${
-                      activeShiftView === 'PAGI' ? 'Pagi' : 'Siang'
-                    }. Klik tombol untuk mengalokasikan mesin secara otomatis.`
-                  : `Belum ada perawat yang dijadwalkan berdinas di Sif ${
-                      activeShiftView === 'PAGI' ? 'Pagi' : 'Siang'
-                    }. Atur dinas perawat di menu Jadwal Harian.`}
-              </p>
-            </div>
-          </div>
-          {isAdmin && nursesOnShift.length > 0 && (
-            <button
-              onClick={() => reallocateMachinesForDate(selectedDate, { rotateBays: true })}
-              className="shrink-0 inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-extrabold shadow-sm transition-all cursor-pointer"
-            >
-              <Cpu className="w-4 h-4" />
-              Alokasikan Otomatis
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Empty State when no machines match */}
+      {/* EMPTY FILTER STATE */}
       {filteredMachines.length === 0 && (
-        <div className="bg-white border border-slate-300 rounded-2xl p-8 text-center space-y-3 shadow-xs">
-          <AlertCircle className="w-10 h-10 text-slate-400 mx-auto" />
-          <h3 className="font-extrabold text-slate-900 text-base">Tidak ada mesin yang sesuai dengan filter</h3>
-          <p className="text-xs sm:text-sm text-slate-600 max-w-md mx-auto">
-            {machines.length === 0
-              ? 'Daftar mesin kosong. Silakan klik tombol "Pulihkan 30 Mesin HD" untuk memuat seluruh 30 mesin.'
-              : 'Silakan sesuaikan pencarian atau reset filter untuk menampilkan mesin kembali.'}
+        <div className="bg-white rounded-2xl p-12 text-center border border-slate-200 shadow-sm space-y-3">
+          <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto">
+            <AlertCircle className="w-6 h-6" />
+          </div>
+          <h3 className="font-extrabold text-slate-900 text-base">Tidak Ada Mesin yang Cocok</h3>
+          <p className="text-xs text-slate-500 max-w-md mx-auto">
+            Tidak ditemukan mesin yang memenuhi kriteria filter atau pencarian Anda pada{' '}
+            {activeTab === 'PAGI' ? 'Sif Pagi' : activeTab === 'SIANG' ? 'Sif Siang' : 'menu ini'}.
           </p>
           <div className="flex items-center justify-center gap-2 pt-2">
             <button
               onClick={() => {
+                setSearchQuery('');
                 setSelectedBayFilter('ALL');
                 setSelectedCategoryFilter('ALL');
                 setSelectedStatusFilter('ALL');
-                setSearchQuery('');
+                setShiftStatusFilter('ALL');
+                setCompareDisparityFilter('ALL');
               }}
-              className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold rounded-xl text-xs"
+              className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition-colors"
             >
               Reset Filter
             </button>
@@ -589,272 +1143,684 @@ export const MachineLayoutScreen: React.FC = () => {
         </div>
       )}
 
-      {/* VIEW 1: BY BAY / ROOM GROUPED VIEW (MOST INTUITIVE FOR NURSES) */}
-      {viewMode === 'BY_BAY' && (
-        <div className="space-y-6">
-          {bays.map((bay) => {
-            const bayMachines = machinesByBay[bay] || [];
-            if (bayMachines.length === 0) return null;
+      {/* TAB VIEW 1 & 2: SIF PAGI ATAU SIF SIANG ATAU MASTER */}
+      {activeTab !== 'COMPARE' && filteredMachines.length > 0 && (
+        <>
+          {/* VIEW: BY BAY / ROOM GROUPED */}
+          {viewMode === 'BY_BAY' && (
+            <div className="space-y-6">
+              {bays.map((bay) => {
+                const bayMachines = machinesByBay[bay] || [];
+                if (bayMachines.length === 0) return null;
 
-            const isIsolationBay = bay.toLowerCase().includes('isolasi') || bay.toLowerCase().includes('cito');
-            const isHepBay = bay.toLowerCase().includes('hepatitis');
+                const isIsolationBay = bay.toLowerCase().includes('isolasi') || bay.toLowerCase().includes('cito');
+                const isHepBay = bay.toLowerCase().includes('hepatitis');
 
-            return (
-              <div
-                key={bay}
-                className={`rounded-2xl border-2 overflow-hidden shadow-xs ${
-                  isIsolationBay
-                    ? 'bg-rose-50/40 border-rose-300'
-                    : isHepBay
-                    ? 'bg-purple-50/40 border-purple-300'
-                    : 'bg-white border-slate-300'
-                }`}
-              >
-                {/* Bay Header */}
-                <div
-                  className={`px-4 py-3 flex items-center justify-between border-b ${
-                    isIsolationBay
-                      ? 'bg-rose-100/90 border-rose-300 text-rose-950'
-                      : isHepBay
-                      ? 'bg-purple-100/90 border-purple-300 text-purple-950'
-                      : 'bg-slate-100 border-slate-300 text-slate-900'
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <span
-                      className={`w-7 h-7 rounded-lg flex items-center justify-center font-black text-xs ${
+                return (
+                  <div
+                    key={bay}
+                    className={`rounded-2xl border-2 overflow-hidden shadow-xs ${
+                      isIsolationBay
+                        ? 'bg-rose-50/40 border-rose-300'
+                        : isHepBay
+                        ? 'bg-purple-50/40 border-purple-300'
+                        : 'bg-white border-slate-300'
+                    }`}
+                  >
+                    {/* Bay Header */}
+                    <div
+                      className={`px-4 py-3 flex items-center justify-between border-b ${
                         isIsolationBay
-                          ? 'bg-rose-600 text-white'
+                          ? 'bg-rose-100/90 border-rose-300 text-rose-950'
                           : isHepBay
-                          ? 'bg-purple-600 text-white'
-                          : 'bg-blue-600 text-white'
+                          ? 'bg-purple-100/90 border-purple-300 text-purple-950'
+                          : 'bg-slate-100 border-slate-300 text-slate-900'
                       }`}
                     >
-                      {bay.charAt(0)}
-                    </span>
-                    <div>
-                      <h3 className="font-extrabold text-sm sm:text-base tracking-tight flex items-center gap-2">
-                        {bay}
-                        {isIsolationBay && (
-                          <span className="text-[10px] font-black uppercase bg-rose-600 text-white px-2 py-0.5 rounded-full">
-                            Ruang Isolasi (Wajib CITO)
-                          </span>
-                        )}
-                      </h3>
-                      <span className="text-[11px] font-medium text-slate-600">
-                        {bayMachines.length} Mesin HD terdaftar di area ini
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    <div className="text-right text-xs font-bold hidden sm:block">
-                      <span className="text-emerald-700">
-                        {bayMachines.filter((m) => m.status === 'AKTIF').length} Aktif
-                      </span>
-                      {bayMachines.filter((m) => m.status !== 'AKTIF').length > 0 && (
-                        <span className="text-rose-700 ml-2">
-                          • {bayMachines.filter((m) => m.status !== 'AKTIF').length} Non-Aktif
-                        </span>
-                      )}
-                    </div>
-                    {isAdmin && (
-                      <button
-                        onClick={() => {
-                          setSelectedBayToManage(bay);
-                          setIsBayModalOpen(true);
-                        }}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-slate-50 text-slate-800 border-2 border-slate-300 hover:border-blue-400 rounded-xl text-xs font-bold shadow-2xs transition-all cursor-pointer"
-                        title={`Atur Status, Nama, dan Kategori untuk ${bay}`}
-                      >
-                        <Settings className="w-3.5 h-3.5 text-slate-600" />
-                        <span>Atur Bay</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Bay Machines Grid */}
-                <div className="p-3 sm:p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                  {bayMachines.map((machine) => (
-                    <MachineCard
-                      key={machine.id}
-                      machine={machine}
-                      activeShiftView={activeShiftView}
-                      machineNurseMap={machineNurseMap}
-                      isAdmin={isAdmin}
-                      onEdit={() => {
-                        setEditingMachine(machine);
-                        setIsModalOpen(true);
-                      }}
-                      onToggleStatus={() => handleToggleStatus(machine)}
-                      onDelete={() => setMachineToDelete(machine)}
-                      onAssign={() => setAssigningMachine(machine)}
-                    />
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* VIEW 2: FLAT ALL MACHINES GRID */}
-      {viewMode === 'GRID' && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-          {filteredMachines.map((machine) => (
-            <MachineCard
-              key={machine.id}
-              machine={machine}
-              activeShiftView={activeShiftView}
-              machineNurseMap={machineNurseMap}
-              isAdmin={isAdmin}
-              onEdit={() => {
-                setEditingMachine(machine);
-                setIsModalOpen(true);
-              }}
-              onToggleStatus={() => handleToggleStatus(machine)}
-              onDelete={() => setMachineToDelete(machine)}
-              onAssign={() => setAssigningMachine(machine)}
-            />
-          ))}
-        </div>
-      )}
-
-      {/* VIEW 3: COMPACT TABLE VIEW */}
-      {viewMode === 'TABLE' && (
-        <div className="bg-white rounded-2xl border-2 border-slate-300 overflow-hidden shadow-xs">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead>
-                <tr className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-300">
-                  <th className="py-3 px-3">Kode Bed</th>
-                  <th className="py-3 px-3">Nama Mesin</th>
-                  <th className="py-3 px-3">Ruangan / Bay</th>
-                  <th className="py-3 px-3">Kategori Infeksius</th>
-                  <th className="py-3 px-3">Status Mesin</th>
-                  <th className="py-3 px-3">PJ Perawat ({activeShiftView})</th>
-                  {isAdmin && <th className="py-3 px-3 text-right">Aksi</th>}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200">
-                {filteredMachines.map((m) => {
-                  const assigned =
-                    machineNurseMap.get(m.id) ||
-                    machineNurseMap.get(String(m.id)) ||
-                    (m.code
-                      ? machineNurseMap.get(m.code.toUpperCase()) || machineNurseMap.get(m.code.toLowerCase())
-                      : undefined);
-                  const catInfo = MACHINE_CATEGORY_INFO[m.category];
-                  const statusInfo = MACHINE_STATUS_INFO[m.status];
-                  const isIso = m.category === 'ISOLASI';
-
-                  return (
-                    <tr
-                      key={m.id}
-                      className={`hover:bg-slate-50 font-medium ${
-                        isIso ? 'bg-rose-50/40' : m.status !== 'AKTIF' ? 'bg-slate-50/70 opacity-80' : ''
-                      }`}
-                    >
-                      <td className="py-2.5 px-3 font-mono font-black text-slate-900 text-sm">
-                        <span className="inline-flex items-center gap-1">
-                          {m.code}
-                          {isIso && <ShieldAlert className="w-3.5 h-3.5 text-rose-600" />}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-3">
-                        <div className="font-bold text-slate-900">{m.name}</div>
-                        <div className="text-[10px] text-slate-500">{m.brandModel}</div>
-                      </td>
-                      <td className="py-2.5 px-3 font-semibold text-slate-800">{m.bay}</td>
-                      <td className="py-2.5 px-3">
-                        <span className={`text-[10px] px-2 py-0.5 rounded-md font-bold ${catInfo.badgeClass}`}>
-                          {catInfo.label}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-3">
+                      <div className="flex items-center gap-2.5">
                         <span
-                          className={`text-[10px] px-2 py-0.5 rounded-md font-bold border inline-flex items-center gap-1 ${statusInfo.colorClass}`}
+                          className={`w-7 h-7 rounded-lg flex items-center justify-center font-black text-xs ${
+                            isIsolationBay
+                              ? 'bg-rose-600 text-white'
+                              : isHepBay
+                              ? 'bg-purple-600 text-white'
+                              : activeTab === 'SIANG'
+                              ? 'bg-amber-600 text-white'
+                              : 'bg-blue-600 text-white'
+                          }`}
                         >
-                          <span className={`w-1.5 h-1.5 rounded-full ${statusInfo.dotClass}`} />
-                          {statusInfo.label}
+                          {bay.charAt(0)}
                         </span>
-                      </td>
-                      <td className="py-2.5 px-3">
-                        {assigned ? (
-                          <div className="flex items-center gap-1.5">
-                            <div className="w-5 h-5 rounded-md bg-blue-600 text-white font-black text-[10px] flex items-center justify-center">
-                              {assigned.nurseName.charAt(0)}
-                            </div>
-                            <span className="font-extrabold text-blue-900">{assigned.nurseName}</span>
-                            {assigned.isLeader && (
-                              <span className="text-[9px] font-black px-1.5 py-0.2 bg-indigo-100 text-indigo-800 rounded">
-                                KATIM
+                        <div>
+                          <h3 className="font-extrabold text-sm sm:text-base tracking-tight flex items-center gap-2">
+                            {bay}
+                            {isIsolationBay && (
+                              <span className="text-[10px] font-black uppercase bg-rose-600 text-white px-2 py-0.5 rounded-full">
+                                Ruang Isolasi (Wajib CITO)
                               </span>
                             )}
-                          </div>
-                        ) : m.status === 'AKTIF' ? (
-                          <span className="text-[11px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded">
-                            Belum Ada PJ
+                          </h3>
+                          <span className="text-[11px] font-medium text-slate-600">
+                            {bayMachines.length} Mesin HD terdaftar di area ini
                           </span>
-                        ) : (
-                          <span className="text-[11px] text-slate-500 italic">Non-Aktif</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <div className="text-right text-xs font-bold hidden sm:block">
+                          <span className="text-emerald-700">
+                            {bayMachines.filter((m) => m.status === 'AKTIF').length} Aktif
+                          </span>
+                          {bayMachines.filter((m) => m.status !== 'AKTIF').length > 0 && (
+                            <span className="text-rose-700 ml-2">
+                              • {bayMachines.filter((m) => m.status !== 'AKTIF').length} Non-Aktif
+                            </span>
+                          )}
+                        </div>
+                        {isAdmin && (
+                          <button
+                            onClick={() => {
+                              setSelectedBayToManage(bay);
+                              setIsBayModalOpen(true);
+                            }}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-slate-50 text-slate-800 border-2 border-slate-300 hover:border-blue-400 rounded-xl text-xs font-bold shadow-2xs transition-all cursor-pointer"
+                            title={`Atur Status, Nama, dan Kategori untuk ${bay}`}
+                          >
+                            <Settings className="w-3.5 h-3.5 text-slate-600" />
+                            <span>Atur Bay</span>
+                          </button>
                         )}
-                      </td>
-                      {isAdmin && (
-                        <td className="py-2.5 px-3 text-right">
-                          <div className="inline-flex items-center gap-1">
-                            <button
-                              onClick={() => {
-                                setEditingMachine(m);
-                                setIsModalOpen(true);
-                              }}
-                              className="p-1 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
-                              title="Edit Mesin"
-                            >
-                              <Edit2 className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              onClick={() => handleToggleStatus(m)}
-                              className="p-1 text-slate-600 hover:text-amber-600 hover:bg-amber-50 rounded transition-colors"
-                              title="Ganti Status"
-                            >
-                              <Wrench className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              onClick={() => setMachineToDelete(m)}
-                              className="p-1 text-slate-600 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors"
-                              title="Hapus Mesin"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </td>
+                      </div>
+                    </div>
+
+                    {/* Bay Machines Grid */}
+                    <div className="p-3 sm:p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                      {bayMachines.map((machine) => (
+                        <MachineCard
+                          key={machine.id}
+                          machine={machine}
+                          activeShiftView={currentActiveShift}
+                          machineNurseMap={currentMachineNurseMap}
+                          isMasterMode={activeTab === 'MASTER'}
+                          isAdmin={isAdmin}
+                          onEdit={() => {
+                            setEditingMachine(machine);
+                            setIsModalOpen(true);
+                          }}
+                          onToggleStatus={() => handleToggleStatus(machine)}
+                          onDelete={() => setMachineToDelete(machine)}
+                          onAssign={() =>
+                            setAssigningState({
+                              machine,
+                              targetShift: currentActiveShift,
+                            })
+                          }
+                        />
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* VIEW: FLAT ALL MACHINES GRID */}
+          {viewMode === 'GRID' && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+              {filteredMachines.map((machine) => (
+                <MachineCard
+                  key={machine.id}
+                  machine={machine}
+                  activeShiftView={currentActiveShift}
+                  machineNurseMap={currentMachineNurseMap}
+                  isMasterMode={activeTab === 'MASTER'}
+                  isAdmin={isAdmin}
+                  onEdit={() => {
+                    setEditingMachine(machine);
+                    setIsModalOpen(true);
+                  }}
+                  onToggleStatus={() => handleToggleStatus(machine)}
+                  onDelete={() => setMachineToDelete(machine)}
+                  onAssign={() =>
+                    setAssigningState({
+                      machine,
+                      targetShift: currentActiveShift,
+                    })
+                  }
+                />
+              ))}
+            </div>
+          )}
+
+          {/* VIEW: COMPACT TABLE VIEW */}
+          {viewMode === 'TABLE' && (
+            <div className="bg-white rounded-2xl border-2 border-slate-300 overflow-hidden shadow-xs">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-300">
+                      <th className="py-3 px-3">Kode Bed</th>
+                      <th className="py-3 px-3">Nama Mesin</th>
+                      <th className="py-3 px-3">Ruangan / Bay</th>
+                      <th className="py-3 px-3">Kategori Infeksius</th>
+                      <th className="py-3 px-3">Status Mesin</th>
+                      <th className="py-3 px-3">Operasional Sif</th>
+                      {activeTab !== 'MASTER' && (
+                        <th className="py-3 px-3">PJ Perawat ({activeTab === 'PAGI' ? 'Sif Pagi' : 'Sif Siang'})</th>
                       )}
+                      {isAdmin && <th className="py-3 px-3 text-right">Aksi</th>}
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {filteredMachines.map((m) => {
+                      const assigned =
+                        currentMachineNurseMap.get(m.id) ||
+                        currentMachineNurseMap.get(String(m.id)) ||
+                        (m.code
+                          ? currentMachineNurseMap.get(m.code.toUpperCase()) || currentMachineNurseMap.get(m.code.toLowerCase())
+                          : undefined);
+                      const catInfo = MACHINE_CATEGORY_INFO[m.category];
+                      const statusInfo = MACHINE_STATUS_INFO[m.status];
+                      const shiftInfo = MACHINE_OPERATIONAL_SHIFT_INFO[m.operationalShift || 'ALL'];
+                      const isIso = m.category === 'ISOLASI';
+
+                      return (
+                        <tr
+                          key={m.id}
+                          className={`hover:bg-slate-50 font-medium ${
+                            isIso ? 'bg-rose-50/40' : m.status !== 'AKTIF' ? 'bg-slate-50/70 opacity-80' : ''
+                          }`}
+                        >
+                          <td className="py-2.5 px-3 font-mono font-black text-slate-900 text-sm">
+                            <span className="inline-flex items-center gap-1">
+                              {m.code}
+                              {isIso && <ShieldAlert className="w-3.5 h-3.5 text-rose-600" />}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <div className="font-bold text-slate-900">{m.name}</div>
+                            <div className="text-[10px] text-slate-500">{m.brandModel}</div>
+                          </td>
+                          <td className="py-2.5 px-3 font-semibold text-slate-800">{m.bay}</td>
+                          <td className="py-2.5 px-3">
+                            <span className={`text-[10px] px-2 py-0.5 rounded-md font-bold ${catInfo.badgeClass}`}>
+                              {catInfo.label}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span
+                              className={`text-[10px] px-2 py-0.5 rounded-md font-bold border inline-flex items-center gap-1 ${statusInfo.colorClass}`}
+                            >
+                              <span className={`w-1.5 h-1.5 rounded-full ${statusInfo.dotClass}`} />
+                              {statusInfo.label}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span className={`text-[10px] px-2 py-0.5 rounded-md font-bold border ${shiftInfo.badgeClass}`}>
+                              {shiftInfo.shortLabel}
+                            </span>
+                          </td>
+                          {activeTab !== 'MASTER' && (
+                            <td className="py-2.5 px-3">
+                              {assigned ? (
+                                <div className="flex items-center gap-1.5">
+                                  <div
+                                    className={`w-5 h-5 rounded-md text-white font-black text-[10px] flex items-center justify-center ${
+                                      activeTab === 'SIANG' ? 'bg-amber-600' : 'bg-blue-600'
+                                    }`}
+                                  >
+                                    {assigned.nurseName.charAt(0)}
+                                  </div>
+                                  <span className="font-extrabold text-slate-900">{assigned.nurseName}</span>
+                                  {assigned.isLeader && (
+                                    <span className="text-[9px] font-black px-1.5 py-0.2 bg-indigo-100 text-indigo-800 rounded">
+                                      KATIM
+                                    </span>
+                                  )}
+                                  {isAdmin && (
+                                    <button
+                                      onClick={() =>
+                                        setAssigningState({
+                                          machine: m,
+                                          targetShift: currentActiveShift,
+                                        })
+                                      }
+                                      className="text-[10px] text-blue-700 hover:text-blue-900 font-bold ml-1"
+                                    >
+                                      Ubah
+                                    </button>
+                                  )}
+                                </div>
+                              ) : m.status === 'AKTIF' ? (
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-[11px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded">
+                                    Belum Ada PJ
+                                  </span>
+                                  {isAdmin && (
+                                    <button
+                                      onClick={() =>
+                                        setAssigningState({
+                                          machine: m,
+                                          targetShift: currentActiveShift,
+                                        })
+                                      }
+                                      className="text-[10px] font-black px-1.5 py-0.5 bg-blue-600 text-white rounded hover:bg-blue-700"
+                                    >
+                                      Tugaskan
+                                    </button>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-[11px] text-slate-500 italic">Non-Aktif</span>
+                              )}
+                            </td>
+                          )}
+                          {isAdmin && (
+                            <td className="py-2.5 px-3 text-right">
+                              <div className="inline-flex items-center gap-1">
+                                <button
+                                  onClick={() => {
+                                    setEditingMachine(m);
+                                    setIsModalOpen(true);
+                                  }}
+                                  className="p-1 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                                  title="Edit Mesin"
+                                >
+                                  <Edit2 className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => handleToggleStatus(m)}
+                                  className="p-1 text-slate-600 hover:text-amber-600 hover:bg-amber-50 rounded transition-colors"
+                                  title="Ganti Status"
+                                >
+                                  <Wrench className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => setMachineToDelete(m)}
+                                  className="p-1 text-slate-600 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors"
+                                  title="Hapus Mesin"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* TAB VIEW 3: PERBANDINGAN DUA SIF (COMPARE VIEW) */}
+      {activeTab === 'COMPARE' && filteredMachines.length > 0 && (
+        <div className="space-y-4">
+          {compareViewMode === 'TABLE' ? (
+            <div className="bg-white rounded-2xl border-2 border-slate-300 overflow-hidden shadow-xs">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-300">
+                      <th className="py-3 px-3 w-28">Kode Bed</th>
+                      <th className="py-3 px-3">Mesin & Ruangan</th>
+                      <th className="py-3 px-3">Status Mesin</th>
+                      <th className="py-3 px-4 bg-sky-50/70 border-l border-r border-sky-200 text-sky-950 font-black">
+                        <div className="flex items-center gap-1.5">
+                          <Sun className="w-4 h-4 text-amber-500" />
+                          <span>PJ Sif Pagi (06:30 - 14:00)</span>
+                        </div>
+                      </th>
+                      <th className="py-3 px-4 bg-amber-50/70 border-r border-amber-200 text-amber-950 font-black">
+                        <div className="flex items-center gap-1.5">
+                          <Sunset className="w-4 h-4 text-amber-600" />
+                          <span>PJ Sif Siang (13:30 - 21:00)</span>
+                        </div>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {filteredMachines.map((m) => {
+                      const pagiAssigned =
+                        pagiMachineNurseMap.get(m.id) ||
+                        pagiMachineNurseMap.get(String(m.id)) ||
+                        (m.code ? pagiMachineNurseMap.get(m.code.toUpperCase()) : undefined);
+
+                      const siangAssigned =
+                        siangMachineNurseMap.get(m.id) ||
+                        siangMachineNurseMap.get(String(m.id)) ||
+                        (m.code ? siangMachineNurseMap.get(m.code.toUpperCase()) : undefined);
+
+                      const catInfo = MACHINE_CATEGORY_INFO[m.category];
+                      const statusInfo = MACHINE_STATUS_INFO[m.status];
+                      const isIso = m.category === 'ISOLASI';
+                      const isOperational = !m.status || m.status === 'AKTIF';
+
+                      const pagiEligible = m.operationalShift !== 'SIANG';
+                      const siangEligible = m.operationalShift !== 'PAGI';
+
+                      return (
+                        <tr key={m.id} className="hover:bg-slate-50/70 font-medium">
+                          {/* Bed Code */}
+                          <td className="py-3 px-3 font-mono font-black text-slate-900 text-sm align-top">
+                            <span className="inline-flex items-center gap-1.5">
+                              {m.code}
+                              {isIso && <ShieldAlert className="w-3.5 h-3.5 text-rose-600" />}
+                            </span>
+                          </td>
+
+                          {/* Machine & Room */}
+                          <td className="py-3 px-3 align-top">
+                            <div className="font-extrabold text-slate-900 text-sm">{m.name}</div>
+                            <div className="text-slate-600 text-xs font-semibold">{m.bay}</div>
+                            <div className="mt-1 flex items-center gap-1">
+                              <span className={`text-[9px] px-1.5 py-0.2 rounded font-bold ${catInfo.badgeClass}`}>
+                                {catInfo.label}
+                              </span>
+                            </div>
+                          </td>
+
+                          {/* Machine Status */}
+                          <td className="py-3 px-3 align-top">
+                            <span
+                              className={`text-[10px] px-2 py-0.5 rounded-md font-bold border inline-flex items-center gap-1 ${statusInfo.colorClass}`}
+                            >
+                              <span className={`w-1.5 h-1.5 rounded-full ${statusInfo.dotClass}`} />
+                              {statusInfo.label}
+                            </span>
+                          </td>
+
+                          {/* Sif Pagi Column */}
+                          <td className="py-3 px-4 bg-sky-50/30 border-l border-r border-sky-100 align-top">
+                            {!pagiEligible ? (
+                              <span className="text-xs text-slate-400 italic">Tidak beroperasi di Sif Pagi</span>
+                            ) : !isOperational ? (
+                              <span className="text-xs text-slate-400 italic">Mesin Non-Aktif</span>
+                            ) : pagiAssigned ? (
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-6 h-6 rounded-md bg-blue-600 text-white font-black text-xs flex items-center justify-center shrink-0">
+                                    {pagiAssigned.nurseName.charAt(0)}
+                                  </div>
+                                  <div>
+                                    <span className="font-extrabold text-slate-900 text-xs block">
+                                      {pagiAssigned.nurseName}
+                                    </span>
+                                    {pagiAssigned.isLeader && (
+                                      <span className="text-[9px] font-black px-1.5 py-0.2 bg-indigo-100 text-indigo-800 rounded">
+                                        KATIM
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                                {isAdmin && (
+                                  <button
+                                    onClick={() =>
+                                      setAssigningState({
+                                        machine: m,
+                                        targetShift: 'PAGI',
+                                      })
+                                    }
+                                    className="text-[10px] font-bold text-blue-700 hover:text-blue-900 px-2 py-1 bg-white hover:bg-blue-100 rounded border border-blue-200 transition-colors"
+                                  >
+                                    Ubah
+                                  </button>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-black text-amber-800 bg-amber-100 px-2 py-1 rounded">
+                                  Belum Ada PJ
+                                </span>
+                                {isAdmin && (
+                                  <button
+                                    onClick={() =>
+                                      setAssigningState({
+                                        machine: m,
+                                        targetShift: 'PAGI',
+                                      })
+                                    }
+                                    className="text-[10px] font-black px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors"
+                                  >
+                                    Tugaskan
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </td>
+
+                          {/* Sif Siang Column */}
+                          <td className="py-3 px-4 bg-amber-50/30 border-r border-amber-100 align-top">
+                            {!siangEligible ? (
+                              <span className="text-xs text-slate-400 italic">Tidak beroperasi di Sif Siang</span>
+                            ) : !isOperational ? (
+                              <span className="text-xs text-slate-400 italic">Mesin Non-Aktif</span>
+                            ) : siangAssigned ? (
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-6 h-6 rounded-md bg-amber-600 text-white font-black text-xs flex items-center justify-center shrink-0">
+                                    {siangAssigned.nurseName.charAt(0)}
+                                  </div>
+                                  <div>
+                                    <span className="font-extrabold text-slate-900 text-xs block">
+                                      {siangAssigned.nurseName}
+                                    </span>
+                                    {siangAssigned.isLeader && (
+                                      <span className="text-[9px] font-black px-1.5 py-0.2 bg-indigo-100 text-indigo-800 rounded">
+                                        KATIM
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                                {isAdmin && (
+                                  <button
+                                    onClick={() =>
+                                      setAssigningState({
+                                        machine: m,
+                                        targetShift: 'SIANG',
+                                      })
+                                    }
+                                    className="text-[10px] font-bold text-amber-800 hover:text-amber-950 px-2 py-1 bg-white hover:bg-amber-100 rounded border border-amber-200 transition-colors"
+                                  >
+                                    Ubah
+                                  </button>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-black text-amber-800 bg-amber-100 px-2 py-1 rounded">
+                                  Belum Ada PJ
+                                </span>
+                                {isAdmin && (
+                                  <button
+                                    onClick={() =>
+                                      setAssigningState({
+                                        machine: m,
+                                        targetShift: 'SIANG',
+                                      })
+                                    }
+                                    className="text-[10px] font-black px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded transition-colors"
+                                  >
+                                    Tugaskan
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
+            /* Split Cards View */
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {filteredMachines.map((m) => {
+                const pagiAssigned =
+                  pagiMachineNurseMap.get(m.id) ||
+                  (m.code ? pagiMachineNurseMap.get(m.code.toUpperCase()) : undefined);
+                const siangAssigned =
+                  siangMachineNurseMap.get(m.id) ||
+                  (m.code ? siangMachineNurseMap.get(m.code.toUpperCase()) : undefined);
+
+                const isOperational = !m.status || m.status === 'AKTIF';
+
+                return (
+                  <div key={m.id} className="bg-white rounded-2xl border-2 border-slate-300 p-3.5 shadow-xs flex flex-col justify-between">
+                    {/* Header */}
+                    <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono font-black text-slate-900 text-base">{m.code}</span>
+                        <span className="text-xs font-extrabold text-slate-700">{m.name}</span>
+                      </div>
+                      <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+                        {m.bay}
+                      </span>
+                    </div>
+
+                    {/* Split Columns */}
+                    <div className="grid grid-cols-2 gap-2 my-3">
+                      {/* Pagi */}
+                      <div className="p-2.5 rounded-xl bg-sky-50 border border-sky-200 flex flex-col justify-between">
+                        <div>
+                          <div className="flex items-center gap-1 text-sky-800 font-black text-[11px] mb-1">
+                            <Sun className="w-3 h-3 text-amber-500" />
+                            <span>Sif Pagi</span>
+                          </div>
+                          {pagiAssigned ? (
+                            <div>
+                              <span className="font-extrabold text-slate-900 text-xs block truncate">
+                                {pagiAssigned.nurseName}
+                              </span>
+                              {pagiAssigned.isLeader && (
+                                <span className="text-[9px] font-bold text-indigo-700">KATIM</span>
+                              )}
+                            </div>
+                          ) : isOperational ? (
+                            <span className="text-[10px] font-black text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded">
+                              Belum Ada PJ
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-slate-400">Non-Aktif</span>
+                          )}
+                        </div>
+                        {isAdmin && isOperational && (
+                          <button
+                            onClick={() =>
+                              setAssigningState({
+                                machine: m,
+                                targetShift: 'PAGI',
+                              })
+                            }
+                            className="mt-2 text-[10px] font-bold text-blue-700 hover:text-blue-900 bg-white border border-blue-200 rounded py-0.5 transition-colors"
+                          >
+                            {pagiAssigned ? 'Ganti' : 'Tugaskan'}
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Siang */}
+                      <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 flex flex-col justify-between">
+                        <div>
+                          <div className="flex items-center gap-1 text-amber-900 font-black text-[11px] mb-1">
+                            <Sunset className="w-3 h-3 text-amber-600" />
+                            <span>Sif Siang</span>
+                          </div>
+                          {siangAssigned ? (
+                            <div>
+                              <span className="font-extrabold text-slate-900 text-xs block truncate">
+                                {siangAssigned.nurseName}
+                              </span>
+                              {siangAssigned.isLeader && (
+                                <span className="text-[9px] font-bold text-indigo-700">KATIM</span>
+                              )}
+                            </div>
+                          ) : isOperational ? (
+                            <span className="text-[10px] font-black text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded">
+                              Belum Ada PJ
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-slate-400">Non-Aktif</span>
+                          )}
+                        </div>
+                        {isAdmin && isOperational && (
+                          <button
+                            onClick={() =>
+                              setAssigningState({
+                                machine: m,
+                                targetShift: 'SIANG',
+                              })
+                            }
+                            className="mt-2 text-[10px] font-bold text-amber-800 hover:text-amber-950 bg-white border border-amber-200 rounded py-0.5 transition-colors"
+                          >
+                            {siangAssigned ? 'Ganti' : 'Tugaskan'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
-      {/* Manual Direct Assign Modal */}
-      {assigningMachine && (
+      {/* DIRECT ASSIGN MODAL (PAGI ATAU SIANG) */}
+      {assigningState && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
           <div className="bg-white rounded-2xl shadow-xl border border-slate-300 w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-150">
             <div className="p-4 bg-slate-100 border-b border-slate-300 flex items-center justify-between">
               <div>
                 <h3 className="font-extrabold text-slate-900 text-base flex items-center gap-1.5">
-                  Tugaskan Mesin {assigningMachine.code} ({assigningMachine.name})
+                  Tugaskan Mesin {assigningState.machine.code} ({assigningState.machine.name})
                 </h3>
-                <p className="text-xs text-slate-600 font-medium">
-                  Pilih perawat dinas Sif {activeShiftView === 'PAGI' ? 'Pagi' : 'Siang'} ({selectedDate})
-                </p>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-xs text-slate-600 font-medium">
+                    Penugasan untuk {selectedDate}:
+                  </span>
+                  {/* Shift Picker Inside Modal */}
+                  <div className="inline-flex items-center bg-slate-200 p-0.5 rounded-lg text-[11px] font-bold">
+                    <button
+                      onClick={() =>
+                        setAssigningState({
+                          ...assigningState,
+                          targetShift: 'PAGI',
+                        })
+                      }
+                      className={`px-2 py-0.5 rounded-md transition-all ${
+                        assigningState.targetShift === 'PAGI'
+                          ? 'bg-blue-600 text-white shadow-2xs'
+                          : 'text-slate-700 hover:text-slate-900'
+                      }`}
+                    >
+                      Sif Pagi
+                    </button>
+                    <button
+                      onClick={() =>
+                        setAssigningState({
+                          ...assigningState,
+                          targetShift: 'SIANG',
+                        })
+                      }
+                      className={`px-2 py-0.5 rounded-md transition-all ${
+                        assigningState.targetShift === 'SIANG'
+                          ? 'bg-amber-600 text-white shadow-2xs'
+                          : 'text-slate-700 hover:text-slate-900'
+                      }`}
+                    >
+                      Sif Siang
+                    </button>
+                  </div>
+                </div>
               </div>
               <button
-                onClick={() => setAssigningMachine(null)}
+                onClick={() => setAssigningState(null)}
                 className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-200 rounded-lg transition-colors font-bold"
               >
                 ✕
@@ -862,7 +1828,7 @@ export const MachineLayoutScreen: React.FC = () => {
             </div>
 
             {/* If assigning ISOLASI machine, show reminder banner */}
-            {assigningMachine.category === 'ISOLASI' && (
+            {assigningState.machine.category === 'ISOLASI' && (
               <div className="p-3 bg-rose-50 border-b border-rose-200 text-xs text-rose-900 flex items-center gap-2 font-semibold">
                 <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0" />
                 <span>Mesin Isolasi wajib ditugaskan ke perawat dengan Tugas Khusus CITO.</span>
@@ -870,24 +1836,24 @@ export const MachineLayoutScreen: React.FC = () => {
             )}
 
             <div className="p-4 space-y-2 max-h-[60vh] overflow-y-auto">
-              {nursesOnShift.length === 0 ? (
+              {(assigningState.targetShift === 'PAGI' ? pagiNurses : siangNurses).length === 0 ? (
                 <div className="text-center py-6 text-slate-500 text-xs">
-                  Tidak ada perawat dinas pada sif ini. Silakan tentukan dinas perawat di menu Jadwal Harian terlebih dahulu.
+                  Tidak ada perawat dinas pada Sif {assigningState.targetShift === 'PAGI' ? 'Pagi' : 'Siang'}. Silakan tentukan dinas perawat di menu Jadwal Harian terlebih dahulu.
                 </div>
               ) : (
-                nursesOnShift.map((assignment) => {
+                (assigningState.targetShift === 'PAGI' ? pagiNurses : siangNurses).map((assignment) => {
                   const currentCount = assignment.assignedMachineIds.length;
-                  const isCurrentHolder = assignment.assignedMachineIds.includes(assigningMachine.id);
+                  const isCurrentHolder = assignment.assignedMachineIds.includes(assigningState.machine.id);
                   const isCitoNurse = (assignment.specialDuty || '').toUpperCase().includes('CITO');
 
                   return (
                     <button
                       key={assignment.id}
-                      onClick={() => handleManualAssign(assignment.id, assigningMachine.id)}
+                      onClick={() => handleManualAssign(assignment.id, assigningState.machine.id, assigningState.targetShift)}
                       className={`w-full text-left p-3 rounded-xl border-2 flex items-center justify-between transition-all cursor-pointer ${
                         isCurrentHolder
                           ? 'bg-blue-50 border-blue-500 ring-2 ring-blue-500/20'
-                          : assigningMachine.category === 'ISOLASI' && isCitoNurse
+                          : assigningState.machine.category === 'ISOLASI' && isCitoNurse
                           ? 'bg-rose-50/60 border-rose-300 hover:bg-rose-100/60'
                           : 'bg-white border-slate-200 hover:bg-slate-50 hover:border-slate-300'
                       }`}
@@ -895,7 +1861,11 @@ export const MachineLayoutScreen: React.FC = () => {
                       <div className="flex items-center gap-3">
                         <div
                           className={`w-9 h-9 rounded-xl font-bold text-sm flex items-center justify-center text-white ${
-                            isCitoNurse ? 'bg-rose-600' : 'bg-blue-600'
+                            isCitoNurse
+                              ? 'bg-rose-600'
+                              : assigningState.targetShift === 'SIANG'
+                              ? 'bg-amber-600'
+                              : 'bg-blue-600'
                           }`}
                         >
                           {assignment.nurseName.charAt(0)}
@@ -915,7 +1885,7 @@ export const MachineLayoutScreen: React.FC = () => {
                             )}
                           </p>
                           <p className="text-xs text-slate-600 font-medium">
-                            Memegang {currentCount} mesin saat ini
+                            Memegang {currentCount} mesin pada Sif {assigningState.targetShift === 'PAGI' ? 'Pagi' : 'Siang'}
                           </p>
                         </div>
                       </div>
@@ -937,20 +1907,10 @@ export const MachineLayoutScreen: React.FC = () => {
               )}
             </div>
 
-            <div className="p-3 bg-slate-100 border-t border-slate-300 flex items-center justify-between">
+            <div className="p-3 bg-slate-100 border-t border-slate-300 flex items-center justify-end gap-2">
               <button
-                onClick={() => {
-                  reallocateMachinesForDate(selectedDate, { rotateBays: true });
-                  setAssigningMachine(null);
-                }}
-                className="inline-flex items-center gap-1 text-xs font-bold text-blue-700 hover:text-blue-900"
-              >
-                <Cpu className="w-3.5 h-3.5" />
-                Alokasikan Otomatis Semua Mesin
-              </button>
-              <button
-                onClick={() => setAssigningMachine(null)}
-                className="px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-200 rounded-lg"
+                onClick={() => setAssigningState(null)}
+                className="px-3.5 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-200 rounded-lg"
               >
                 Tutup
               </button>
@@ -971,11 +1931,22 @@ export const MachineLayoutScreen: React.FC = () => {
         machine={editingMachine}
       />
 
+      {/* Reallocate Machines Modal */}
       {isReallocateModalOpen && (
         <RegenerateMachineAllocationModal
           isOpen={isReallocateModalOpen}
           onClose={() => setIsReallocateModalOpen(false)}
           defaultScope="DAILY"
+          defaultShift={reallocateTargetShift}
+        />
+      )}
+
+      {/* WhatsApp Broadcast Modal */}
+      {isBroadcastModalOpen && (
+        <WhatsAppBroadcastModal
+          isOpen={isBroadcastModalOpen}
+          onClose={() => setIsBroadcastModalOpen(false)}
+          initialShiftFilter={broadcastInitialShift}
         />
       )}
 
@@ -1014,6 +1985,7 @@ interface MachineCardProps {
   machine: Machine;
   activeShiftView: 'PAGI' | 'SIANG';
   machineNurseMap: Map<number | string, { nurseName: string; isLeader: boolean; nurseId: number; specialDuty?: string | null }>;
+  isMasterMode?: boolean;
   isAdmin: boolean;
   onEdit: () => void;
   onToggleStatus: () => void;
@@ -1025,6 +1997,7 @@ const MachineCard: React.FC<MachineCardProps> = ({
   machine,
   activeShiftView,
   machineNurseMap,
+  isMasterMode = false,
   isAdmin,
   onEdit,
   onToggleStatus,
@@ -1040,6 +2013,7 @@ const MachineCard: React.FC<MachineCardProps> = ({
 
   const catInfo = MACHINE_CATEGORY_INFO[machine.category];
   const statusInfo = MACHINE_STATUS_INFO[machine.status];
+  const shiftInfo = MACHINE_OPERATIONAL_SHIFT_INFO[machine.operationalShift || 'ALL'];
   const isOperational =
     !machine.status ||
     machine.status.toUpperCase() === 'AKTIF' ||
@@ -1057,7 +2031,9 @@ const MachineCard: React.FC<MachineCardProps> = ({
           : isIsolation
           ? 'bg-rose-50/40 border-rose-300 ring-1 ring-rose-400/20'
           : assigned
-          ? 'bg-white border-blue-300 ring-1 ring-blue-500/10'
+          ? activeShiftView === 'SIANG'
+            ? 'bg-white border-amber-300 ring-1 ring-amber-500/10'
+            : 'bg-white border-blue-300 ring-1 ring-blue-500/10'
           : 'bg-white border-amber-300 ring-1 ring-amber-400/30'
       }`}
     >
@@ -1073,6 +2049,8 @@ const MachineCard: React.FC<MachineCardProps> = ({
                   : isHepB
                   ? 'bg-purple-600 text-white'
                   : isHepC
+                  ? 'bg-pink-600 text-white'
+                  : activeShiftView === 'SIANG'
                   ? 'bg-amber-600 text-white'
                   : 'bg-blue-600 text-white'
               }`}
@@ -1122,7 +2100,7 @@ const MachineCard: React.FC<MachineCardProps> = ({
           )}
         </div>
 
-        {/* Badges: Bay, Category, Status */}
+        {/* Badges: Bay, Category, Status, Shift */}
         <div className="mt-3 flex flex-wrap items-center gap-1.5">
           <span className="text-[10px] px-2 py-0.5 rounded-md bg-slate-200 text-slate-800 font-bold">
             {machine.bay}
@@ -1136,6 +2114,11 @@ const MachineCard: React.FC<MachineCardProps> = ({
             <span className={`w-1.5 h-1.5 rounded-full ${statusInfo.dotClass}`} />
             {statusInfo.label}
           </span>
+          {machine.operationalShift && machine.operationalShift !== 'ALL' && (
+            <span className={`text-[10px] px-2 py-0.5 rounded-md border font-extrabold ${shiftInfo.badgeClass}`}>
+              {shiftInfo.shortLabel}
+            </span>
+          )}
         </div>
 
         {/* Isolation rule indicator banner */}
@@ -1153,70 +2136,82 @@ const MachineCard: React.FC<MachineCardProps> = ({
         )}
       </div>
 
-      {/* PJ Perawat Footer */}
-      <div className="mt-4 pt-3 border-t border-slate-200">
-        <span className="text-[10px] font-extrabold uppercase text-slate-600 tracking-wider block mb-1">
-          PJ Perawat ({activeShiftView}):
-        </span>
+      {/* PJ Perawat Footer (Hanya tampil di Sif Pagi atau Sif Siang) */}
+      {!isMasterMode && (
+        <div className="mt-4 pt-3 border-t border-slate-200">
+          <span className="text-[10px] font-extrabold uppercase text-slate-600 tracking-wider block mb-1">
+            PJ Perawat (Sif {activeShiftView === 'PAGI' ? 'Pagi' : 'Siang'}):
+          </span>
 
-        {assigned ? (
-          <div className="flex items-center justify-between bg-blue-50 p-2 rounded-xl border border-blue-300">
-            <div className="flex items-center gap-2 truncate min-w-0">
-              <div className="w-6 h-6 rounded-lg bg-blue-600 text-white font-black text-xs flex items-center justify-center shrink-0">
-                {assigned.nurseName.charAt(0)}
-              </div>
-              <div className="truncate">
-                <span className="font-extrabold text-xs text-blue-950 block truncate">
-                  {assigned.nurseName}
-                </span>
-                {assigned.specialDuty && (
-                  <span className="text-[9px] text-blue-700 font-bold block truncate">
-                    Tugas: {assigned.specialDuty}
+          {assigned ? (
+            <div
+              className={`flex items-center justify-between p-2 rounded-xl border ${
+                activeShiftView === 'SIANG'
+                  ? 'bg-amber-50/80 border-amber-300'
+                  : 'bg-blue-50/80 border-blue-300'
+              }`}
+            >
+              <div className="flex items-center gap-2 truncate min-w-0">
+                <div
+                  className={`w-6 h-6 rounded-lg text-white font-black text-xs flex items-center justify-center shrink-0 ${
+                    activeShiftView === 'SIANG' ? 'bg-amber-600' : 'bg-blue-600'
+                  }`}
+                >
+                  {assigned.nurseName.charAt(0)}
+                </div>
+                <div className="truncate">
+                  <span className="font-extrabold text-xs text-slate-900 block truncate">
+                    {assigned.nurseName}
                   </span>
+                  {assigned.specialDuty && (
+                    <span className="text-[9px] text-blue-700 font-bold block truncate">
+                      Tugas: {assigned.specialDuty}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1 shrink-0 ml-1">
+                {assigned.isLeader && (
+                  <span className="text-[9px] font-black px-1.5 py-0.5 bg-indigo-100 text-indigo-900 rounded border border-indigo-300">
+                    KATIM
+                  </span>
+                )}
+                {isAdmin && (
+                  <button
+                    onClick={onAssign}
+                    className="text-[10px] text-blue-700 hover:text-blue-900 font-extrabold px-2 py-0.5 bg-white hover:bg-slate-100 border border-slate-200 rounded transition-colors"
+                    title="Pindahkan alokasi mesin"
+                  >
+                    Ubah
+                  </button>
                 )}
               </div>
             </div>
-
-            <div className="flex items-center gap-1 shrink-0 ml-1">
-              {assigned.isLeader && (
-                <span className="text-[9px] font-black px-1.5 py-0.5 bg-indigo-100 text-indigo-900 rounded border border-indigo-300">
-                  KATIM
-                </span>
-              )}
+          ) : isOperational ? (
+            <div className="flex items-center justify-between bg-amber-50 text-amber-950 p-2 rounded-xl text-xs border border-amber-300">
+              <div className="flex items-center gap-1.5 truncate">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                <span className="text-[11px] font-black">Belum Ada PJ</span>
+              </div>
               {isAdmin && (
                 <button
                   onClick={onAssign}
-                  className="text-[10px] text-blue-700 hover:text-blue-900 font-extrabold px-2 py-0.5 bg-blue-100 hover:bg-blue-200 rounded transition-colors"
-                  title="Pindahkan alokasi mesin"
+                  className="text-[10px] font-black px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-md shadow-2xs transition-colors cursor-pointer"
+                  title="Tugaskan perawat untuk mesin ini"
                 >
-                  Ubah
+                  Tugaskan
                 </button>
               )}
             </div>
-          </div>
-        ) : isOperational ? (
-          <div className="flex items-center justify-between bg-amber-50 text-amber-950 p-2 rounded-xl text-xs border border-amber-300">
-            <div className="flex items-center gap-1.5 truncate">
-              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
-              <span className="text-[11px] font-black">Belum Ada PJ</span>
+          ) : (
+            <div className="bg-slate-200 text-slate-600 p-2 rounded-xl text-xs flex items-center gap-1.5 font-semibold">
+              <PowerOff className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+              <span className="text-[11px]">Mesin Non-Aktif</span>
             </div>
-            {isAdmin && (
-              <button
-                onClick={onAssign}
-                className="text-[10px] font-black px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-md shadow-2xs transition-colors cursor-pointer"
-                title="Tugaskan perawat untuk mesin ini"
-              >
-                Tugaskan
-              </button>
-            )}
-          </div>
-        ) : (
-          <div className="bg-slate-200 text-slate-600 p-2 rounded-xl text-xs flex items-center gap-1.5 font-semibold">
-            <PowerOff className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-            <span className="text-[11px]">Mesin Non-Aktif</span>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };

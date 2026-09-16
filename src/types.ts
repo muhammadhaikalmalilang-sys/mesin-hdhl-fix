@@ -187,15 +187,24 @@ export const MACHINE_CATEGORY_INFO: Record<MachineCategory, { label: string; isS
   ISOLASI: { label: 'Isolasi Khusus', isSpecial: true, badgeClass: 'bg-red-100 text-red-900 font-black border border-red-300' },
 };
 
+export type MachineOperationalShift = 'ALL' | 'PAGI' | 'SIANG';
+
+export const MACHINE_OPERATIONAL_SHIFT_INFO: Record<MachineOperationalShift, { label: string; shortLabel: string; badgeClass: string }> = {
+  ALL: { label: 'Semua Sif (Pagi & Siang)', shortLabel: 'Pagi & Siang', badgeClass: 'bg-indigo-50 text-indigo-700 border-indigo-200' },
+  PAGI: { label: 'Khusus Sif Pagi', shortLabel: 'Hanya Pagi', badgeClass: 'bg-sky-100 text-sky-800 border-sky-300' },
+  SIANG: { label: 'Khusus Sif Siang', shortLabel: 'Hanya Siang', badgeClass: 'bg-amber-100 text-amber-800 border-amber-300' },
+};
+
 export interface Machine {
-  id: number; // 1 to 25
-  code: string; // "M-01", "M-02" ... "M-25"
-  name: string; // "Mesin HD 01"
-  bay: string; // "Bay A (Reguler)", "Bay B (Reguler)", "Bay C (Reguler)", "Ruang Khusus Hepatitis B", "Ruang Khusus Hepatitis C", "Ruang Isolasi Tekanan Negatif"
+  id: number; // 1 to 30
+  code: string; // "A01", "B01", etc.
+  name: string; // "Mesin HD A01"
+  bay: string; // "Bay A (Reguler)", etc.
   category: MachineCategory;
   status: MachineStatus;
   brandModel: string;
   notes?: string;
+  operationalShift?: MachineOperationalShift;
 }
 
 export type ShiftType = 'PAGI' | 'SIANG' | 'LIBUR' | 'CUTI' | 'SAKIT';

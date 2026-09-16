@@ -1,6 +1,6 @@
 {
   "name": "MESIN-HDHL-FIX",
-  "description": "Imported from GitHub: haikalmalilangnew-dotcom/MESINHDHL",
+  "description": "Sistem Penjadwalan Adil & Alokasi Mesin Hemodialisis dengan Pemisahan Pengelolaan Sif Pagi dan Sif Siang",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

@@ -1,7 +1,15 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Machine, MachineCategory, MachineStatus, MACHINE_CATEGORY_INFO, MACHINE_STATUS_INFO } from '../types';
+import {
+  Machine,
+  MachineCategory,
+  MachineStatus,
+  MachineOperationalShift,
+  MACHINE_CATEGORY_INFO,
+  MACHINE_STATUS_INFO,
+  MACHINE_OPERATIONAL_SHIFT_INFO,
+} from '../types';
 import { useHemo } from '../context/HemoContext';
-import { X, Cpu, Layers, Activity, Trash2, PlusCircle } from 'lucide-react';
+import { X, Cpu, Layers, Activity, Trash2, PlusCircle, Sun, Sunset, Clock } from 'lucide-react';
 
 interface MachineModalProps {
   isOpen: boolean;
@@ -27,6 +35,7 @@ export const MachineModal: React.FC<MachineModalProps> = ({
   const [customBayInput, setCustomBayInput] = useState('');
   const [category, setCategory] = useState<MachineCategory>('REGULER');
   const [status, setStatus] = useState<MachineStatus>('AKTIF');
+  const [operationalShift, setOperationalShift] = useState<MachineOperationalShift>('ALL');
   const [brandModel, setBrandModel] = useState('Fresenius 4008S');
   const [notes, setNotes] = useState('');
 
@@ -56,6 +65,7 @@ export const MachineModal: React.FC<MachineModalProps> = ({
       setCustomBayInput('');
       setCategory(machine.category);
       setStatus(machine.status);
+      setOperationalShift(machine.operationalShift || 'ALL');
       setBrandModel(machine.brandModel);
       setNotes(machine.notes || '');
     } else {
@@ -66,6 +76,7 @@ export const MachineModal: React.FC<MachineModalProps> = ({
       setCustomBayInput('');
       setCategory('REGULER');
       setStatus('AKTIF');
+      setOperationalShift('ALL');
       setBrandModel('Fresenius 4008S');
       setNotes('');
     }
@@ -88,6 +99,7 @@ export const MachineModal: React.FC<MachineModalProps> = ({
         bay: finalBay,
         category,
         status,
+        operationalShift,
         brandModel: brandModel.trim(),
         notes: notes.trim(),
       });
@@ -98,6 +110,7 @@ export const MachineModal: React.FC<MachineModalProps> = ({
         bay: finalBay,
         category,
         status,
+        operationalShift,
         brandModel: brandModel.trim(),
         notes: notes.trim(),
       });
@@ -256,16 +269,36 @@ export const MachineModal: React.FC<MachineModalProps> = ({
 
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Merk & Model Mesin
+                Operasional Sif (Pagi / Siang)
               </label>
-              <input
-                type="text"
-                value={brandModel}
-                onChange={(e) => setBrandModel(e.target.value)}
-                placeholder="Fresenius 4008S, Nipro Surdial, B.Braun"
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-slate-800"
-              />
+              <div className="relative">
+                <select
+                  value={operationalShift}
+                  onChange={(e) => setOperationalShift(e.target.value as MachineOperationalShift)}
+                  className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-800 font-medium"
+                >
+                  {Object.entries(MACHINE_OPERATIONAL_SHIFT_INFO).map(([key, val]) => (
+                    <option key={key} value={key}>
+                      {val.label}
+                    </option>
+                  ))}
+                </select>
+                <Clock className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+              </div>
             </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Merk & Model Mesin
+            </label>
+            <input
+              type="text"
+              value={brandModel}
+              onChange={(e) => setBrandModel(e.target.value)}
+              placeholder="Fresenius 4008S, Nipro Surdial, B.Braun"
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-slate-800"
+            />
           </div>
 
           <div>
