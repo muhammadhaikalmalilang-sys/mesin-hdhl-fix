@@ -89,6 +89,8 @@ export const MachineLayoutScreen: React.FC = () => {
 
   // Modals
   const [editingMachine, setEditingMachine] = useState<Machine | null>(null);
+  const [modalDefaultBay, setModalDefaultBay] = useState<string | undefined>(undefined);
+  const [modalDefaultShift, setModalDefaultShift] = useState<MachineOperationalShift>('ALL');
   const [machineToDelete, setMachineToDelete] = useState<Machine | null>(null);
   const [assigningState, setAssigningState] = useState<{
     machine: Machine;
@@ -383,17 +385,40 @@ export const MachineLayoutScreen: React.FC = () => {
     showToast(`Status ${machine.code} diubah menjadi ${MACHINE_STATUS_INFO[nextStatus].label}`, 'info');
   };
 
-  // Save machine handler
-  const handleSaveMachine = (m: Omit<Machine, 'id'> | Machine) => {
-    if (!isAdmin) return;
-    if ('id' in m) {
-      updateMachine(m as Machine);
-      showToast(`Mesin ${m.code} berhasil diperbarui`, 'success');
-    } else {
-      addMachine(m);
-      showToast(`Mesin baru ${m.code} berhasil ditambahkan`, 'success');
+  // Open Add Machine Modal with optional shift & bay context
+  const handleOpenAddMachine = (targetShift?: 'PAGI' | 'SIANG' | 'ALL', targetBay?: string) => {
+    if (!isAdmin) {
+      showToast('Hanya Kepala Ruangan / Admin yang dapat menambah unit mesin HD.', 'error');
+      return;
     }
     setEditingMachine(null);
+    setModalDefaultBay(targetBay);
+    if (targetShift) {
+      setModalDefaultShift(targetShift);
+    } else if (activeTab === 'PAGI') {
+      setModalDefaultShift('PAGI');
+    } else if (activeTab === 'SIANG') {
+      setModalDefaultShift('SIANG');
+    } else {
+      setModalDefaultShift('ALL');
+    }
+    setIsModalOpen(true);
+  };
+
+  // Save machine handler
+  const handleSaveMachine = (m: Omit<Machine, 'id'> | Machine) => {
+    if (!isAdmin) {
+      showToast('Hanya Kepala Ruangan / Admin yang dapat mengelola unit mesin HD.', 'error');
+      return;
+    }
+    if ('id' in m) {
+      updateMachine(m as Machine);
+    } else {
+      addMachine(m);
+    }
+    setIsModalOpen(false);
+    setEditingMachine(null);
+    setModalDefaultBay(undefined);
   };
 
   // Manual Assign handler
@@ -647,18 +672,29 @@ export const MachineLayoutScreen: React.FC = () => {
 
             <div className="flex items-center gap-2 flex-wrap self-stretch sm:self-auto justify-end">
               {isAdmin && (
-                <button
-                  onClick={() => {
-                    setReallocateTargetShift('PAGI');
-                    setIsReallocateModalOpen(true);
-                  }}
-                  disabled={isGenerating}
-                  className="px-3.5 py-2 bg-white text-blue-700 hover:bg-blue-50 font-black rounded-xl text-xs shadow-sm transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                  title="Alokasikan mesin khusus Sif Pagi secara adil tanpa mengubah Sif Siang"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                  <span>{isGenerating ? 'Mengalokasikan...' : 'Alokasi Otomatis Pagi'}</span>
-                </button>
+                <>
+                  <button
+                    onClick={() => {
+                      setReallocateTargetShift('PAGI');
+                      setIsReallocateModalOpen(true);
+                    }}
+                    disabled={isGenerating}
+                    className="px-3.5 py-2 bg-white text-blue-700 hover:bg-blue-50 font-black rounded-xl text-xs shadow-sm transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    title="Alokasikan mesin khusus Sif Pagi secara adil tanpa mengubah Sif Siang"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                    <span>{isGenerating ? 'Mengalokasikan...' : 'Alokasi Otomatis Pagi'}</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleOpenAddMachine('PAGI')}
+                    className="px-3.5 py-2 bg-sky-800/80 hover:bg-sky-800 text-white font-bold rounded-xl text-xs shadow-xs border border-sky-400/40 transition-all flex items-center gap-1.5 cursor-pointer"
+                    title="Tambah unit mesin baru khusus Sif Pagi"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Tambah Mesin</span>
+                  </button>
+                </>
               )}
 
               <button
@@ -707,18 +743,29 @@ export const MachineLayoutScreen: React.FC = () => {
 
             <div className="flex items-center gap-2 flex-wrap self-stretch sm:self-auto justify-end">
               {isAdmin && (
-                <button
-                  onClick={() => {
-                    setReallocateTargetShift('SIANG');
-                    setIsReallocateModalOpen(true);
-                  }}
-                  disabled={isGenerating}
-                  className="px-3.5 py-2 bg-white text-orange-700 hover:bg-orange-50 font-black rounded-xl text-xs shadow-sm transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                  title="Alokasikan mesin khusus Sif Siang secara adil tanpa mengubah Sif Pagi"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                  <span>{isGenerating ? 'Mengalokasikan...' : 'Alokasi Otomatis Siang'}</span>
-                </button>
+                <>
+                  <button
+                    onClick={() => {
+                      setReallocateTargetShift('SIANG');
+                      setIsReallocateModalOpen(true);
+                    }}
+                    disabled={isGenerating}
+                    className="px-3.5 py-2 bg-white text-orange-700 hover:bg-orange-50 font-black rounded-xl text-xs shadow-sm transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    title="Alokasikan mesin khusus Sif Siang secara adil tanpa mengubah Sif Pagi"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                    <span>{isGenerating ? 'Mengalokasikan...' : 'Alokasi Otomatis Siang'}</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleOpenAddMachine('SIANG')}
+                    className="px-3.5 py-2 bg-amber-800/80 hover:bg-amber-800 text-white font-bold rounded-xl text-xs shadow-xs border border-amber-400/40 transition-all flex items-center gap-1.5 cursor-pointer"
+                    title="Tambah unit mesin baru khusus Sif Siang"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Tambah Mesin</span>
+                  </button>
+                </>
               )}
 
               <button
@@ -812,10 +859,7 @@ export const MachineLayoutScreen: React.FC = () => {
                 </button>
 
                 <button
-                  onClick={() => {
-                    setEditingMachine(null);
-                    setIsModalOpen(true);
-                  }}
+                  onClick={() => handleOpenAddMachine('ALL')}
                   className="px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl text-xs shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
@@ -1218,17 +1262,27 @@ export const MachineLayoutScreen: React.FC = () => {
                           )}
                         </div>
                         {isAdmin && (
-                          <button
-                            onClick={() => {
-                              setSelectedBayToManage(bay);
-                              setIsBayModalOpen(true);
-                            }}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-slate-50 text-slate-800 border-2 border-slate-300 hover:border-blue-400 rounded-xl text-xs font-bold shadow-2xs transition-all cursor-pointer"
-                            title={`Atur Status, Nama, dan Kategori untuk ${bay}`}
-                          >
-                            <Settings className="w-3.5 h-3.5 text-slate-600" />
-                            <span>Atur Bay</span>
-                          </button>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => handleOpenAddMachine(activeTab === 'PAGI' ? 'PAGI' : activeTab === 'SIANG' ? 'SIANG' : 'ALL', bay)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                              title={`Tambah unit mesin baru di ${bay}`}
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              <span className="hidden sm:inline">+ Mesin</span>
+                            </button>
+                            <button
+                              onClick={() => {
+                                setSelectedBayToManage(bay);
+                                setIsBayModalOpen(true);
+                              }}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-slate-50 text-slate-800 border-2 border-slate-300 hover:border-blue-400 rounded-xl text-xs font-bold shadow-2xs transition-all cursor-pointer"
+                              title={`Atur Status, Nama, dan Kategori untuk ${bay}`}
+                            >
+                              <Settings className="w-3.5 h-3.5 text-slate-600" />
+                              <span>Atur Bay</span>
+                            </button>
+                          </div>
                         )}
                       </div>
                     </div>
@@ -1925,10 +1979,13 @@ export const MachineLayoutScreen: React.FC = () => {
         onClose={() => {
           setIsModalOpen(false);
           setEditingMachine(null);
+          setModalDefaultBay(undefined);
         }}
         onSave={handleSaveMachine}
         onDelete={(m) => setMachineToDelete(m)}
         machine={editingMachine}
+        defaultBay={modalDefaultBay}
+        defaultOperationalShift={modalDefaultShift}
       />
 
       {/* Reallocate Machines Modal */}

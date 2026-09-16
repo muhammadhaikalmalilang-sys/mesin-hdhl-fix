@@ -436,6 +436,7 @@ export const HemoProvider: React.FC<{ children: React.ReactNode }> = ({ children
       status: machine.status || 'AKTIF',
       brandModel: machine.brandModel || '',
       notes: machine.notes ?? '',
+      operationalShift: machine.operationalShift || 'ALL',
     };
   };
 
@@ -703,6 +704,7 @@ export const HemoProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     ...m,
                     ...cloudM,
                     notes: cloudM.notes ?? '',
+                    operationalShift: cloudM.operationalShift || m.operationalShift || 'ALL',
                   };
                 }
                 return m;
@@ -714,6 +716,7 @@ export const HemoProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   merged.push({
                     ...cm,
                     notes: cm.notes ?? '',
+                    operationalShift: cm.operationalShift || 'ALL',
                   });
                 }
               });
@@ -2100,21 +2103,77 @@ export const HemoProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const addMachine = (machineData: Omit<Machine, 'id'> | Machine) => {
     if (!checkKaruPermission('menambah mesin HD')) return;
+
+    const targetCode = machineData.code.trim().toUpperCase();
+    const isDuplicate = machines.some(
+      (m) => m.code.trim().toUpperCase() === targetCode
+    );
+    if (isDuplicate) {
+      showToast(`Gagal: Kode mesin "${targetCode}" sudah digunakan. Silakan gunakan kode lain.`, 'error');
+      return;
+    }
+
     const nextId = machines.length > 0 ? Math.max(...machines.map((m) => m.id)) + 1 : 1;
     const newMachine: Machine = {
       ...machineData,
       id: 'id' in machineData ? machineData.id : nextId,
+      code: targetCode,
+      name: machineData.name.trim(),
+      bay: machineData.bay.trim() || 'Bay A (Reguler)',
+      category: machineData.category || 'REGULER',
+      status: machineData.status || 'AKTIF',
+      operationalShift: machineData.operationalShift || 'ALL',
+      brandModel: machineData.brandModel?.trim() || 'Fresenius 4008S',
+      notes: machineData.notes?.trim() ?? '',
     };
+
+    // Remove from deleted ids if previously recorded
+    try {
+      const deleted = JSON.parse(localStorage.getItem('hemo_deleted_machine_ids') || '[]');
+      const updatedDeleted = deleted.filter((dId: number) => dId !== newMachine.id);
+      localStorage.setItem('hemo_deleted_machine_ids', JSON.stringify(updatedDeleted));
+    } catch (e) {}
+
     syncMachineToCloud(newMachine);
-    setMachines((prev) => [...prev, newMachine]);
+    setMachines((prev) => {
+      const updated = [...prev, newMachine];
+      localStorage.setItem('hemo_machines_v1', JSON.stringify(updated));
+      return updated;
+    });
     showToast(`Mesin ${newMachine.name} (${newMachine.code}) berhasil ditambahkan.`, 'success');
   };
 
   const updateMachine = (machine: Machine) => {
     if (!checkKaruPermission('mengubah data mesin HD')) return;
-    syncMachineToCloud(machine);
-    setMachines((prev) => prev.map((m) => (m.id === machine.id ? machine : m)));
-    showToast(`Data mesin ${machine.name} berhasil diperbarui.`, 'success');
+
+    const targetCode = machine.code.trim().toUpperCase();
+    const isDuplicate = machines.some(
+      (m) => m.id !== machine.id && m.code.trim().toUpperCase() === targetCode
+    );
+    if (isDuplicate) {
+      showToast(`Gagal: Kode mesin "${targetCode}" sudah digunakan oleh mesin lain.`, 'error');
+      return;
+    }
+
+    const sanitizedMachine: Machine = {
+      ...machine,
+      code: targetCode,
+      name: machine.name.trim(),
+      bay: machine.bay.trim() || 'Bay A (Reguler)',
+      category: machine.category || 'REGULER',
+      status: machine.status || 'AKTIF',
+      operationalShift: machine.operationalShift || 'ALL',
+      brandModel: machine.brandModel?.trim() || 'Fresenius 4008S',
+      notes: machine.notes?.trim() ?? '',
+    };
+
+    syncMachineToCloud(sanitizedMachine);
+    setMachines((prev) => {
+      const updated = prev.map((m) => (m.id === machine.id ? sanitizedMachine : m));
+      localStorage.setItem('hemo_machines_v1', JSON.stringify(updated));
+      return updated;
+    });
+    showToast(`Data mesin ${sanitizedMachine.name} berhasil diperbarui.`, 'success');
   };
 
   const addOrUpdateMachine = (machineData: Partial<Machine> & { name: string; code: string; bay: string }) => {
